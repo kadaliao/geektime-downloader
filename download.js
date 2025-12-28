@@ -885,9 +885,26 @@ async function main(options) {
     console.log(chalk.gray(`📁 输出目录: ${outputDir}\n`));
 
     // 启动浏览器
-    const browser = await chromium.launch({
-        headless: options.headless !== false
-    });
+    let browser;
+    try {
+        browser = await chromium.launch({
+            headless: options.headless !== false
+        });
+    } catch (error) {
+        // 检查是否是浏览器未安装的错误
+        if (error.message.includes("Executable doesn't exist") || error.message.includes('browsers')) {
+            console.error(chalk.red('\n❌ Playwright 浏览器未安装！\n'));
+            console.log(chalk.yellow('请运行以下命令安装浏览器：'));
+            console.log(chalk.cyan('  npx playwright install chromium\n'));
+            console.log(chalk.gray('或者使用 --with-deps 参数安装系统依赖：'));
+            console.log(chalk.gray('  npx playwright install chromium --with-deps\n'));
+            console.log(chalk.gray('提示：如果你是通过 npx 运行的，建议先全局安装：'));
+            console.log(chalk.gray('  npm install -g @kadaliao/geektime-downloader\n'));
+            process.exit(1);
+        }
+        // 其他错误直接抛出
+        throw error;
+    }
 
     // 保存到全局变量，用于信号处理
     globalBrowser = browser;
@@ -996,7 +1013,7 @@ async function main(options) {
 program
     .name('geektime-dl')
     .description('批量下载极客时间专栏文章为PDF')
-    .version('1.0.0')
+    .version('1.0.1')
     .option('-u, --url <url>', '专栏文章URL（任意一篇）')
     .option('-c, --cookie <cookie>', 'Cookie字符串（用于认证）')
     .option('-o, --output <dir>', '输出目录', './downloads')

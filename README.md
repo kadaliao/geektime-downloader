@@ -186,6 +186,27 @@ npx @kadaliao/geektime-downloader \
 
 ## 🐛 常见问题
 
+### Playwright 浏览器未安装？
+
+如果遇到 "Executable doesn't exist" 错误，说明 Playwright 浏览器未安装。
+
+**方式一：自动安装（推荐）**
+```bash
+# 全局安装会自动安装浏览器
+npm install -g @kadaliao/geektime-downloader
+```
+
+**方式二：手动安装浏览器**
+```bash
+# 只安装 Chromium
+npx playwright install chromium
+
+# 或安装浏览器及系统依赖（Linux/Mac）
+npx playwright install chromium --with-deps
+```
+
+**注意**：使用 `npx` 直接运行时，可能需要先手动安装浏览器。为了更好的体验，建议全局安装。
+
 ### Cookie 和 URL 必须通过命令行传吗？
 
 不是。三种方式任选：
