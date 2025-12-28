@@ -1,0 +1,33 @@
+# Node modules
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# 下载文件
+downloads/
+*.pdf
+
+# 配置文件（包含敏感信息）
+config.json
+
+# 调试文件
+debug*.js
+fetch-api.js
+api-response.json
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 测试文件
+test/
+*.test.js
+
+PUBLISH.md

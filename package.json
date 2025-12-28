@@ -1,0 +1,38 @@
+{
+  "name": "@kadaliao/geektime-downloader",
+  "version": "1.0.0",
+  "description": "极客时间专栏文章批量下载工具 - 支持一键下载整个专栏为PDF",
+  "type": "module",
+  "main": "download.js",
+  "bin": {
+    "geektime-dl": "./download.js"
+  },
+  "scripts": {
+    "start": "node download.js",
+    "test": "node download.js --dry-run"
+  },
+  "keywords": [
+    "geektime",
+    "downloader",
+    "pdf",
+    "crawler",
+    "极客时间"
+  ],
+  "author": "liaoxingyi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/geektime-downloader.git"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "@lillallol/outline-pdf": "^4.0.0",
+    "chalk": "^5.3.0",
+    "commander": "^11.1.0",
+    "ora": "^8.0.1",
+    "pdf-lib": "^1.17.1",
+    "playwright": "^1.40.0"
+  }
+}
