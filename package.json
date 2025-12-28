@@ -5,7 +5,7 @@
   "type": "module",
   "main": "download.js",
   "bin": {
-    "geektime-dl": "./download.js"
+    "geektime-dl": "download.js"
   },
   "scripts": {
     "start": "node download.js",
@@ -23,7 +23,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/geektime-downloader.git"
+    "url": "git+https://github.com/kadaliao/geektime-downloader.git"
   },
   "engines": {
     "node": ">=16.0.0"

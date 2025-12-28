@@ -950,7 +950,7 @@ async function main(options) {
         }
 
         // 并发下载
-        const concurrency = parseInt(options.concurrency) || 3;
+        const concurrency = parseInt(options.concurrency) || 5;
         if (concurrency > 1) {
             console.log(chalk.gray(`📊 并发数: ${concurrency}\n`));
         }
@@ -1019,7 +1019,7 @@ program
     .option('-o, --output <dir>', '输出目录', './downloads')
     .option('--headless <boolean>', '无头模式', true)
     .option('--delay <ms>', '每篇文章之间的延迟(ms)', '2000')
-    .option('--concurrency <number>', '并发下载数量', '3')
+    .option('--concurrency <number>', '并发下载数量', '5')
     .option('--dry-run', '预览模式，只显示文章列表')
     .option('--limit <number>', '限制下载数量（用于测试）')
     .option('--no-merge', '禁用PDF合并（默认会合并所有文章为一个PDF）')
