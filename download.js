@@ -255,6 +255,90 @@ function parseCookies(cookieString) {
 }
 
 // 获取专栏所有文章列表(通过API)
+function getValueByPath(obj, path) {
+    if (!obj || !path) return undefined;
+    return path.split('.').reduce((acc, key) => {
+        if (acc && Object.prototype.hasOwnProperty.call(acc, key)) {
+            return acc[key];
+        }
+        return undefined;
+    }, obj);
+}
+
+function collectAuthorNamesFromData(data) {
+    if (!data || typeof data !== 'object') {
+        return [];
+    }
+
+    const candidates = new Set();
+
+    const pushCandidate = (value) => {
+        if (!value) return;
+        if (Array.isArray(value)) {
+            value.forEach(pushCandidate);
+            return;
+        }
+        if (typeof value === 'object') {
+            const possibleKeys = ['name', 'nickname', 'author_name', 'teacher_name', 'lecturer_name'];
+            possibleKeys.forEach(key => {
+                if (value[key]) {
+                    pushCandidate(value[key]);
+                }
+            });
+            // 遍历其他 name 相关字段
+            Object.keys(value).forEach(key => {
+                if (typeof value[key] === 'string' && key.toLowerCase().includes('name')) {
+                    pushCandidate(value[key]);
+                }
+            });
+            return;
+        }
+        const text = String(value).trim();
+        if (text) {
+            candidates.add(text);
+        }
+    };
+
+    const fieldPaths = [
+        'author', 'author_name', 'authorName',
+        'teachers', 'teacher', 'teacher_name', 'teacherName', 'teacher_info', 'teacherInfo',
+        'lecturer', 'lecturer_name', 'lecturerName', 'lecturers',
+        'authors', 'column_author', 'columnAuthor', 'column_author_name',
+        'column_teacher', 'columnTeacher', 'product_author', 'productAuthor',
+        'product_teacher', 'productTeacher',
+        'owner', 'owner_name', 'speaker', 'speaker_name',
+        'contributors', 'writer', 'writers', 'author_list', 'authorList'
+    ];
+
+    fieldPaths.forEach(path => {
+        const value = getValueByPath(data, path);
+        pushCandidate(value);
+    });
+
+    return Array.from(candidates);
+}
+
+function extractColumnAuthor(columnInfoData, articlesData) {
+    const sources = [];
+    if (columnInfoData && columnInfoData.data) {
+        sources.push(columnInfoData.data);
+    }
+    if (articlesData && articlesData.data) {
+        sources.push(articlesData.data);
+    }
+    if (articlesData && articlesData.data && Array.isArray(articlesData.data.list) && articlesData.data.list.length > 0) {
+        sources.push(articlesData.data.list[0]);
+    }
+
+    for (const data of sources) {
+        const names = collectAuthorNamesFromData(data);
+        if (names.length > 0) {
+            return names.join(', ');
+        }
+    }
+    return '';
+}
+
 async function getArticleList(page, columnUrl, timeout = 60000) {
     const spinner = ora('正在获取专栏信息...').start();
 
@@ -496,6 +580,8 @@ async function getArticleList(page, columnUrl, timeout = 60000) {
         console.log(chalk.gray(`  提取的专栏名: ${columnTitle}\n`));
     }
 
+    const columnAuthor = extractColumnAuthor(columnInfoData, articlesData) || '极客时间';
+
     // 解析文章列表
     const rawArticles = articlesData.data.list;
 
@@ -522,7 +608,7 @@ async function getArticleList(page, columnUrl, timeout = 60000) {
     });
 
     spinner.succeed(`找到 ${chalk.green(articles.length)} 篇文章 - ${columnTitle}`);
-    return { articles, columnTitle };
+    return { articles, columnTitle, columnAuthor };
 }
 
 // 并发下载控制器
@@ -1122,13 +1208,34 @@ async function extractArticleContent(page, article, index, total) {
     try {
         // 访问文章页面
         await page.goto(article.url, { waitUntil: 'networkidle' });
-        await page.waitForTimeout(2000);
 
         // 等待文章内容加载
         await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 60000 });
 
+        // 关键：等待文章完整内容加载，而不是试看内容
+        // 滚动页面以触发懒加载内容
+        await page.evaluate(async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                const distance = 100;
+                const timer = setInterval(() => {
+                    const scrollHeight = document.body.scrollHeight;
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+
+                    if (totalHeight >= scrollHeight) {
+                        clearInterval(timer);
+                        resolve();
+                    }
+                }, 100);
+            });
+        });
+
+        // 再等待一段时间，确保内容完全加载
+        await page.waitForTimeout(3000);
+
         // 提取文章 HTML 内容
-        const content = await page.evaluate((titleText) => {
+        const content = await page.evaluate(() => {
             // 找到文章正文内容
             const articleContent = document.querySelector('.Index_articleContent_QBG5G, .article-content, article, [class*="articleContent"]');
 
@@ -1139,20 +1246,402 @@ async function extractArticleContent(page, article, index, total) {
             // 克隆正文以避免修改原始DOM
             const contentClone = articleContent.cloneNode(true);
 
-            // 创建包含标题的完整HTML
-            let html = '';
-            if (titleText) {
-                html += `<h1>${titleText}</h1>`;
-            }
-            html += contentClone.innerHTML;
+            // 白名单策略：只保留正文核心元素
+            // 允许的元素标签
+            const allowedTags = new Set([
+                'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',           // 段落和标题
+                'UL', 'OL', 'LI',                                   // 列表
+                'BLOCKQUOTE',                                       // 引用
+                'PRE', 'CODE',                                      // 代码
+                'IMG',                                              // 图片
+                'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD',       // 表格
+                'A',                                                // 链接
+                'STRONG', 'B', 'EM', 'I', 'U',                     // 强调和样式
+                'BR', 'HR',                                         // 换行和分隔线
+                'FIGURE', 'FIGCAPTION', 'DETAILS', 'SUMMARY',
+                'SPAN', 'DIV', 'SECTION', 'ARTICLE'                 // 容器（可能包含文本）
+            ]);
 
-            return html;
-        }, article.originalTitle || article.title);
+            // 在清理前，移除常见的非正文区域
+            const removalSelectors = [
+                'nav', 'header', 'footer', 'aside',
+                '.comment', '.comments', '.Index_comment',
+                '.recommend', '.recommendation', '.related', '.advertisement', '.ad', '.banner',
+                '.subscribe', '.subscription', '.toolbar', '.Index_shareIcons_1vtJa',
+                '.keyboard-wrapper', '.app-download', '.article-actions', '.article-bottom',
+                '.note', '.notes', '.annotation', '.translation', '.trans', '.translator',
+                '.audio', '.audio-player', '.voice', '.player', '.geek-player', '.podcast', '.radio',
+                '.reward', '.appreciate', '.appreciation', '.donate', '.sponsor', '.thanks', '.support',
+                '.qrcode', '.qr-code', '.qr', '.promotion', '.promo', '.ad-banner',
+                '.copyright', '.statement', '.disclaimer',
+                '.app-download-banner', '.article-plugin', '.article-notification', '.float-bar',
+                'audio', 'video',
+                '[class*="Note"]', '[class*="note"]', '[class*="Translation"]', '[class*="translation"]',
+                '[class*="Audio"]', '[class*="audio"]', '[class*="Reward"]', '[class*="reward"]',
+                '[data-plugin]', '[data-track]', '[data-track-section]', '[data-translation]', '[data-audio]',
+                '[data-role="toolbar"]',
+                'button', 'iframe', 'script', 'style'
+            ];
+            removalSelectors.forEach(selector => {
+                contentClone.querySelectorAll(selector).forEach(el => el.remove());
+            });
+
+            // 根据关键词进一步移除插件类元素
+            const pluginKeywords = [
+                'note', 'translation', 'audio', 'player', 'reward', 'donate',
+                'appreciation', 'sponsor', 'qrcode', 'toolbar', 'plugin',
+                'copyright', 'geeknote', 'bilingual'
+            ];
+            const pluginElements = Array.from(contentClone.querySelectorAll('*')).filter(el => {
+                const className = (el.className || '').toString().toLowerCase();
+                const idValue = (el.id || '').toString().toLowerCase();
+                const roleValue = (el.getAttribute && el.getAttribute('role')) ? el.getAttribute('role').toLowerCase() : '';
+                const datasetValues = el.dataset ? Object.values(el.dataset).join(' ').toLowerCase() : '';
+                const combined = `${className} ${idValue} ${roleValue} ${datasetValues}`;
+                return pluginKeywords.some(keyword => combined.includes(keyword));
+            });
+            pluginElements.forEach(el => el.remove());
+
+            // 移除 MindMap 等 SVG/Canvas 思维导图内容（阅读器无法正确渲染）
+            const mindmapSelectors = [
+                '.mindmap', '.mind-map', '.MindMap', '.Mind-map',
+                '[data-type="mindmap"]', '[data-role="mindmap"]', '[data-widget="mindmap"]',
+                '[class*="MindMap"]', '[class*="mindMap"]'
+            ];
+            mindmapSelectors.forEach(selector => {
+                contentClone.querySelectorAll(selector).forEach(el => el.remove());
+            });
+            const vectorCandidates = Array.from(contentClone.querySelectorAll('svg, canvas, object, embed'));
+            vectorCandidates.forEach(el => {
+                const className = typeof el.className === 'object' ? el.className.baseVal : (el.className || '');
+                const meta = `${className} ${el.id || ''} ${el.getAttribute('data-type') || ''}`.toLowerCase();
+                if (meta.includes('mind') || meta.includes('mindmap') || meta.includes('mind-map')) {
+                    el.remove();
+                }
+            });
+
+            // 将富文本中的代码块结构转换为标准 <pre><code>
+            const blockSeparatorTags = new Set([
+                'P','DIV','SECTION','ARTICLE','UL','OL','LI','FIGURE','FIGCAPTION',
+                'TABLE','THEAD','TBODY','TR','TD'
+            ]);
+
+            function collectCodeText(node) {
+                const parts = [];
+
+                const ensureNewline = () => {
+                    if (!parts.length) {
+                        parts.push('\n');
+                        return;
+                    }
+                    if (!parts[parts.length - 1].endsWith('\n')) {
+                        parts.push('\n');
+                    }
+                };
+
+                const traverse = (current) => {
+                    if (!current) {
+                        return;
+                    }
+                    if (current.nodeType === Node.TEXT_NODE) {
+                        const textValue = current.textContent.replace(/\u00A0/g, ' ');
+                        if (textValue) {
+                            parts.push(textValue);
+                        }
+                        return;
+                    }
+                    if (current.nodeType !== Node.ELEMENT_NODE) {
+                        return;
+                    }
+                    const tag = current.tagName.toUpperCase();
+                    if (tag === 'BR') {
+                        ensureNewline();
+                        return;
+                    }
+                    Array.from(current.childNodes).forEach(traverse);
+                    if (blockSeparatorTags.has(tag)) {
+                        ensureNewline();
+                    }
+                };
+
+                traverse(node);
+                let text = parts.join('');
+                text = text
+                    .replace(/\r\n/g, '\n')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .replace(/[ \t]+\n/g, '\n')
+                    .replace(/\n+$/g, '\n');
+                return text.trim() ? text : '';
+            }
+
+            const codeLikeSelectors = [
+                '[data-slate-type="code"]',
+                '[data-slate-node="code"]',
+                '[data-code-block]',
+                '[data-code]',
+                '[data-code-language]',
+                '[class*="code-block"]',
+                '[class*="CodeBlock"]'
+            ];
+            const codeCandidates = new Set();
+            codeLikeSelectors.forEach(selector => {
+                contentClone.querySelectorAll(selector).forEach(el => codeCandidates.add(el));
+            });
+            const replaceWithPre = (element) => {
+                if (!element || !element.parentNode) {
+                    return;
+                }
+                const codeText = collectCodeText(element);
+                if (!codeText) {
+                    element.remove();
+                    return;
+                }
+                const pre = document.createElement('pre');
+                const code = document.createElement('code');
+                code.textContent = codeText;
+                pre.appendChild(code);
+                element.parentNode.replaceChild(pre, element);
+            };
+            codeCandidates.forEach(el => {
+                if (el.tagName && el.tagName.toUpperCase() === 'PRE') {
+                    return;
+                }
+                replaceWithPre(el);
+            });
+
+            const multilineInlineCodes = Array.from(contentClone.querySelectorAll('code')).filter(codeEl => {
+                const parent = codeEl.parentElement;
+                return parent && parent.tagName.toUpperCase() !== 'PRE' && codeEl.textContent.includes('\n');
+            });
+            multilineInlineCodes.forEach(codeEl => {
+                const codeText = collectCodeText(codeEl);
+                if (!codeText) {
+                    codeEl.remove();
+                    return;
+                }
+                const pre = document.createElement('pre');
+                const innerCode = document.createElement('code');
+                innerCode.textContent = codeText;
+                pre.appendChild(innerCode);
+                codeEl.parentNode.replaceChild(pre, codeEl);
+            });
+
+            // 递归清理函数：移除不在白名单中的元素
+            function cleanElement(element) {
+                const children = Array.from(element.childNodes);
+
+                for (const child of children) {
+                    if (child.nodeType === Node.ELEMENT_NODE) {
+                        const tagName = child.tagName.toUpperCase();
+
+                        if (!allowedTags.has(tagName)) {
+                            // 先递归处理子节点
+                            cleanElement(child);
+
+                            if (child.childNodes.length > 0) {
+                                while (child.firstChild) {
+                                    element.insertBefore(child.firstChild, child);
+                                }
+                                child.remove();
+                            } else {
+                                const textContent = (child.textContent || '').trim();
+                                if (textContent) {
+                                    const textNode = document.createTextNode(textContent + ' ');
+                                    element.insertBefore(textNode, child);
+                                }
+                                child.remove();
+                            }
+                        } else {
+                            cleanElement(child);
+                        }
+                    }
+                }
+            }
+
+            cleanElement(contentClone);
+
+            // 移除所有style属性，避免样式冲突
+            const allElements = contentClone.querySelectorAll('*');
+            allElements.forEach(el => {
+                el.removeAttribute('style');
+                el.removeAttribute('class');
+                el.removeAttribute('id');
+                el.removeAttribute('onclick');
+                el.removeAttribute('onload');
+            });
+
+            // 处理图片URL
+            const images = contentClone.querySelectorAll('img');
+            const adKeywordLower = ['ad', 'advert', 'banner', 'qrcode', 'qr-code', 'reward', 'donate', 'appdownload', 'app-download', 'sponsor', 'thanks'];
+            const adKeywordCn = ['广告', '二维码', '赞赏', '打赏', '版权', '推广'];
+            images.forEach(img => {
+                let src = img.getAttribute('src');
+                const dataSrc = img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy-src');
+
+                if (dataSrc && (dataSrc.startsWith('http://') || dataSrc.startsWith('https://'))) {
+                    src = dataSrc;
+                    img.setAttribute('src', src);
+                }
+
+                if (!src || src.startsWith('blob:') || src.startsWith('data:')) {
+                    img.remove();
+                    return;
+                }
+
+                if (!src.startsWith('http://') && !src.startsWith('https://')) {
+                    try {
+                        const absoluteUrl = new URL(src, window.location.href).href;
+                        img.setAttribute('src', absoluteUrl);
+                        src = absoluteUrl;
+                    } catch (e) {
+                        img.remove();
+                    }
+                }
+
+                const altText = img.getAttribute('alt') || '';
+                const altLower = altText.toLowerCase();
+                const srcLower = (src || '').toLowerCase();
+                if (
+                    adKeywordLower.some(keyword => srcLower.includes(keyword)) ||
+                    adKeywordLower.some(keyword => altLower.includes(keyword)) ||
+                    adKeywordCn.some(keyword => altText.includes(keyword))
+                ) {
+                    img.remove();
+                    return;
+                }
+
+                // 清理图片属性
+                const imgAttrs = img.attributes;
+                for (let i = imgAttrs.length - 1; i >= 0; i--) {
+                    const attrName = imgAttrs[i].name;
+                    if (attrName !== 'src' && attrName !== 'alt') {
+                        img.removeAttribute(attrName);
+                    }
+                }
+            });
+
+            // 清理空的div和span
+            const containers = contentClone.querySelectorAll('div, span');
+            containers.forEach(container => {
+                if (!container.textContent.trim() && !container.querySelector('img, pre, code, table')) {
+                    container.remove();
+                }
+            });
+
+            // 将只包含纯文本的 div 转换为段落，避免没有段间距
+            const blockLikeTags = new Set(['P','UL','OL','LI','TABLE','PRE','BLOCKQUOTE','H1','H2','H3','H4','H5','H6','IMG','SECTION','ARTICLE','FIGURE','FIGCAPTION','DETAILS','SUMMARY']);
+            const textContainers = Array.from(contentClone.querySelectorAll('div, section, article')).reverse();
+            textContainers.forEach(container => {
+                if (container === contentClone) {
+                    return;
+                }
+
+                if (!container.textContent.trim()) {
+                    return;
+                }
+
+                if (container.querySelector('img, pre, table, ul, ol, blockquote, h1, h2, h3, h4, h5, h6, figure')) {
+                    return;
+                }
+
+                const hasBlockChildren = Array.from(container.children).some(child => blockLikeTags.has(child.tagName?.toUpperCase()));
+                if (hasBlockChildren) {
+                    return;
+                }
+
+                const paragraph = document.createElement('p');
+                paragraph.innerHTML = container.innerHTML;
+                container.parentNode.replaceChild(paragraph, container);
+            });
+
+            // 包装直接挂在容器下的文本或行内节点，避免散乱文本没有段落间距
+            const inlineTags = new Set(['A','SPAN','STRONG','B','EM','I','U','CODE','SMALL','SUB','SUP','MARK']);
+
+            function wrapInlineChildren(element) {
+                const tagName = element.tagName ? element.tagName.toUpperCase() : '';
+                if (['P','LI','PRE','CODE','TABLE','THEAD','TBODY','TR'].includes(tagName)) {
+                    return;
+                }
+
+                const childNodes = Array.from(element.childNodes);
+                let buffer = [];
+
+                const flushBuffer = (referenceNode) => {
+                    if (!buffer.length) {
+                        return;
+                    }
+                    const paragraph = document.createElement('p');
+                    buffer.forEach(node => paragraph.appendChild(node));
+                    element.insertBefore(paragraph, referenceNode);
+                    buffer = [];
+                };
+
+                for (const node of childNodes) {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        if (node.textContent.trim()) {
+                            buffer.push(node);
+                        } else {
+                            element.removeChild(node);
+                        }
+                        continue;
+                    }
+
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        const childTag = node.tagName.toUpperCase();
+                        if (inlineTags.has(childTag) || childTag === 'BR') {
+                            buffer.push(node);
+                            continue;
+                        }
+
+                        flushBuffer(node);
+                        wrapInlineChildren(node);
+                        continue;
+                    }
+
+                    flushBuffer(node);
+                }
+
+                flushBuffer(null);
+            }
+
+            wrapInlineChildren(contentClone);
+
+            // 移除尾部的版权/广告声明
+            const footerKeywords = ['版权', '未经许可', '未经授权', '不得转载', '未经允许', 'All Rights Reserved', '最终解释权', '转载'];
+            const trailingElements = Array.from(contentClone.querySelectorAll('p, div, section')).slice(-6);
+            trailingElements.forEach(el => {
+                const text = (el.textContent || '').trim();
+                if (!text) {
+                    return;
+                }
+                if (text.length <= 200 && footerKeywords.some(keyword => text.includes(keyword))) {
+                    el.remove();
+                }
+            });
+
+            // 处理代码块
+            const codeBlocks = contentClone.querySelectorAll('pre');
+            codeBlocks.forEach(block => {
+                const codeText = collectCodeText(block);
+                if (!codeText) {
+                    block.remove();
+                    return;
+                }
+                let codeInside = block.querySelector('code');
+                if (!codeInside) {
+                    codeInside = document.createElement('code');
+                    block.appendChild(codeInside);
+                }
+                codeInside.textContent = codeText;
+            });
+
+            return contentClone.innerHTML;
+        });
 
         return {
             success: true,
             title: article.originalTitle || article.title,
-            content: content || `<h1>${article.originalTitle || article.title}</h1><p>内容提取失败</p>`
+            content: content || `<p>内容提取失败</p>`
         };
 
     } catch (error) {
@@ -1165,7 +1654,7 @@ async function extractArticleContent(page, article, index, total) {
         return {
             success: false,
             title: article.originalTitle || article.title,
-            content: `<h1>${article.originalTitle || article.title}</h1><p>下载失败: ${errorMessage}</p>`,
+            content: `<p>下载失败: ${errorMessage}</p>`,
             error: errorMessage
         };
     }
@@ -1231,7 +1720,7 @@ async function extractWithConcurrency(context, articles, concurrency = 5, delay 
                 results[index] = {
                     success: false,
                     title: article.originalTitle || article.title,
-                    content: `<h1>${article.originalTitle || article.title}</h1><p>提取失败</p>`,
+                    content: `<p>提取失败</p>`,
                     error: error.message
                 };
                 completed++;
@@ -1259,7 +1748,7 @@ async function extractWithConcurrency(context, articles, concurrency = 5, delay 
 }
 
 // 生成 EPUB 文件
-async function generateEPUB(outputDir, columnTitle, articles, contentResults) {
+async function generateEPUB(outputDir, columnTitle, columnAuthor, articles, contentResults) {
     const spinner = ora('正在生成 EPUB 文件...').start();
 
     try {
@@ -1277,71 +1766,148 @@ async function generateEPUB(outputDir, columnTitle, articles, contentResults) {
             return null;
         }
 
-        const options = {
+                const options = {
             title: columnTitle,
-            author: '极客时间',
+            author: columnAuthor || '极客时间',
             publisher: '极客时间',
             version: 3,
             css: `
                 body {
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                    line-height: 1.6;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+                    line-height: 1.8;
                     color: #333;
-                    padding: 20px;
+                    padding: 1.5em;
+                    font-size: 16px;
+                    text-align: justify;
+                    max-width: 48em;
+                    margin: 0 auto;
+                }
+                h1, h2, h3, h4, h5, h6 {
+                    font-weight: bold;
+                    margin-top: 1.5em;
+                    margin-bottom: 0.8em;
+                    line-height: 1.4;
+                    color: #000;
+                    page-break-after: avoid;
                 }
                 h1 {
                     font-size: 2em;
-                    font-weight: bold;
-                    margin-bottom: 0.8em;
-                    color: #000;
+                    border-bottom: 2px solid #e0e0e0;
+                    padding-bottom: 0.3em;
                 }
                 h2 {
-                    font-size: 1.5em;
-                    font-weight: bold;
-                    margin-top: 1.2em;
-                    margin-bottom: 0.6em;
+                    font-size: 1.6em;
                 }
                 h3 {
                     font-size: 1.3em;
-                    font-weight: bold;
-                    margin-top: 1em;
-                    margin-bottom: 0.5em;
+                }
+                section, article {
+                    margin: 1.5em 0;
+                    padding: 0;
                 }
                 p {
-                    margin-bottom: 1em;
+                    margin: 1.2em 0;
+                    text-indent: 0;
+                    line-height: 1.8;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
+                    display: block;
+                    page-break-inside: avoid;
                 }
-                pre, code {
-                    background-color: #f5f5f5;
-                    border: 1px solid #ddd;
-                    border-radius: 3px;
-                    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+                /* 确保段落之间有明显间隔 */
+                p + p {
+                    margin-top: 1.5em;
                 }
-                code {
-                    padding: 2px 6px;
-                }
+                /* 代码块样式 */
                 pre {
-                    padding: 15px;
+                    background-color: #f6f8fa;
+                    border: 1px solid #e1e4e8;
+                    border-radius: 6px;
+                    padding: 16px;
                     overflow-x: auto;
+                    margin: 1em 0;
+                    line-height: 1.5;
+                    font-size: 14px;
                     white-space: pre-wrap;
                     word-wrap: break-word;
+                    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+                    page-break-inside: avoid;
                 }
+                code {
+                    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+                    font-size: 0.9em;
+                    background-color: #f6f8fa;
+                    padding: 0.2em 0.4em;
+                    border-radius: 3px;
+                    border: 1px solid #e1e4e8;
+                }
+                pre code {
+                    background-color: transparent;
+                    border: none;
+                    padding: 0;
+                }
+                /* 列表样式 */
+                ul, ol {
+                    margin: 1em 0;
+                    padding-left: 2em;
+                    line-height: 1.8;
+                }
+                li {
+                    margin: 0.5em 0;
+                }
+                /* 引用样式 */
+                blockquote {
+                    margin: 1em 0;
+                    padding: 0.5em 1em;
+                    border-left: 4px solid #ddd;
+                    background-color: #f9f9f9;
+                    color: #666;
+                    font-style: italic;
+                }
+                /* 图片样式 */
                 img {
                     max-width: 100%;
                     height: auto;
+                    display: block;
+                    margin: 1em auto;
+                    page-break-inside: avoid;
                 }
+                /* 表格样式 */
                 table {
                     border-collapse: collapse;
                     width: 100%;
                     margin: 1em 0;
+                    font-size: 0.9em;
+                    page-break-inside: avoid;
                 }
                 th, td {
                     border: 1px solid #ddd;
-                    padding: 8px;
+                    padding: 8px 12px;
                     text-align: left;
+                    line-height: 1.6;
                 }
                 th {
-                    background-color: #f5f5f5;
+                    background-color: #f2f2f2;
                     font-weight: bold;
+                }
+                /* 链接样式 */
+                a {
+                    color: #0366d6;
+                    text-decoration: none;
+                }
+                /* 强调和加粗 */
+                strong, b {
+                    font-weight: bold;
+                    color: #000;
+                }
+                em, i {
+                    font-style: italic;
+                }
+                /* 分隔线 */
+                hr {
+                    border: none;
+                    border-top: 1px solid #e1e4e8;
+                    margin: 2em 0;
                 }
             `,
             verbose: process.env.DEBUG ? true : false
@@ -1361,7 +1927,21 @@ async function generateEPUB(outputDir, columnTitle, articles, contentResults) {
 
     } catch (error) {
         spinner.fail(`生成 EPUB 失败: ${error.message}`);
-        console.error(chalk.gray(error.stack));
+
+        // 提供更详细的错误信息
+        if (error.message.includes('Only HTTP(S) protocols are supported')) {
+            console.log(chalk.yellow('\n⚠️  图片URL格式问题：'));
+            console.log(chalk.gray('  某些图片使用了非HTTP(S)协议（如本地路径、blob URL等）'));
+            console.log(chalk.gray('  这是一个已知问题，正在修复中\n'));
+        } else if (error.message.includes('fetch') || error.message.includes('network')) {
+            console.log(chalk.yellow('\n⚠️  网络问题：'));
+            console.log(chalk.gray('  部分图片下载失败，可能是网络连接问题'));
+            console.log(chalk.gray('  建议：检查网络连接或稍后重试\n'));
+        }
+
+        if (process.env.DEBUG) {
+            console.error(chalk.gray(error.stack));
+        }
         return null;
     }
 }
@@ -1464,7 +2044,7 @@ async function main(options) {
         page.setDefaultNavigationTimeout(timeout);
 
         // 获取文章列表
-        const { articles, columnTitle } = await getArticleList(page, columnUrl, timeout);
+        const { articles, columnTitle, columnAuthor } = await getArticleList(page, columnUrl, timeout);
 
         if (articles.length === 0) {
             console.log(chalk.yellow('⚠️  未找到任何文章'));
@@ -1474,7 +2054,8 @@ async function main(options) {
         // 为该专栏创建专用文件夹
         const outputDir = path.join(baseOutputDir, columnTitle);
         await fs.mkdir(outputDir, { recursive: true });
-        console.log(chalk.gray(`📁 专栏输出目录: ${outputDir}\n`));
+        console.log(chalk.gray(`📁 专栏输出目录: ${outputDir}`));
+        console.log(chalk.gray(`✍️  作者: ${columnAuthor}\n`));
 
         // 如果是 dry-run 模式，只显示列表
         if (options.dryRun) {
@@ -1572,6 +2153,13 @@ async function main(options) {
                 console.log(chalk.cyan('📚 格式: EPUB\n'));
             }
 
+            // 重要提醒：关于内容完整性
+            console.log(chalk.yellow('⚠️  重要提醒：'));
+            console.log(chalk.gray('  1. 确保 Cookie 有效且未过期'));
+            console.log(chalk.gray('  2. 确认已购买该专栏（避免只获取试看内容）'));
+            console.log(chalk.gray('  3. EPUB 生成需要下载文章完整内容，耗时较长'));
+            console.log(chalk.gray('  4. 如果只获取到试看内容，说明 Cookie 失效或无权限\n'));
+
             contentResults = await extractWithConcurrency(
                 context,
                 articlesToDownload,
@@ -1604,6 +2192,7 @@ async function main(options) {
                 const epubPath = await generateEPUB(
                     outputDir,
                     columnTitle,
+                    columnAuthor,
                     articlesToDownload,
                     contentResults
                 );
