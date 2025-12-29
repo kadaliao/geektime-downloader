@@ -9,10 +9,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as pdfLib from 'pdf-lib';
 import { outlinePdfFactory } from '@lillallol/outline-pdf';
-import epub from 'epub-gen-memory';
+import epubGenMemory from 'epub-gen-memory';
 
 const { PDFDocument } = pdfLib;
 const outlinePdf = outlinePdfFactory(pdfLib);
+const epub = epubGenMemory.default || epubGenMemory;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -314,7 +315,7 @@ async function getArticleList(page, columnUrl) {
     try {
         // 先设置监听器，再访问页面
         spinner.text = '正在加载页面...';
-        await page.goto(columnUrl, { waitUntil: 'networkidle', timeout: 30000 });
+        await page.goto(columnUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
         spinner.text = '正在获取文章列表...';
 
@@ -365,6 +366,25 @@ async function getArticleList(page, columnUrl) {
 
     if (!articlesData || !articlesData.data || !articlesData.data.list) {
         spinner.fail('API响应数据格式错误');
+
+        // 智能判断可能的原因
+        if (!articlesData) {
+            console.log(chalk.yellow('\n⚠️  未能获取到文章列表数据\n'));
+            console.log(chalk.cyan('可能的原因：'));
+            console.log(chalk.gray('  1. Cookie 已过期或无效 - 请重新获取 Cookie'));
+            console.log(chalk.gray('  2. 网络连接问题 - 请检查网络'));
+            console.log(chalk.gray('  3. 专栏 ID 不正确 - 请检查 URL\n'));
+        } else if (articlesData.code === -3000 || articlesData.code === -3001) {
+            console.log(chalk.red('\n❌ Cookie 已失效\n'));
+            console.log(chalk.cyan('📖 请重新获取 Cookie：'));
+            console.log(chalk.gray('  1. 浏览器登录极客时间'));
+            console.log(chalk.gray('  2. 按 F12 打开开发者工具'));
+            console.log(chalk.gray('  3. Network 标签 → 刷新页面'));
+            console.log(chalk.gray('  4. 点击任意请求 → 复制 Cookie\n'));
+        } else if (articlesData.error) {
+            console.log(chalk.yellow(`\n⚠️  API 返回错误: ${articlesData.error.msg || articlesData.error}\n`));
+        }
+
         return { articles: [], columnTitle: 'unknown' };
     }
 
