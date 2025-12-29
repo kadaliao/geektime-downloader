@@ -255,7 +255,7 @@ function parseCookies(cookieString) {
 }
 
 // 获取专栏所有文章列表(通过API)
-async function getArticleList(page, columnUrl) {
+async function getArticleList(page, columnUrl, timeout = 60000) {
     const spinner = ora('正在获取专栏信息...').start();
 
     // 从 URL 提取专栏 ID
@@ -315,7 +315,7 @@ async function getArticleList(page, columnUrl) {
     try {
         // 先设置监听器，再访问页面
         spinner.text = '正在加载页面...';
-        await page.goto(columnUrl, { waitUntil: 'networkidle', timeout: 60000 });
+        await page.goto(columnUrl, { waitUntil: 'networkidle', timeout });
 
         spinner.text = '正在获取文章列表...';
 
@@ -1438,8 +1438,11 @@ async function main(options) {
     const page = await context.newPage();
 
     try {
+        // 获取配置的超时时间
+        const timeout = parseInt(options.timeout) || 60000;
+
         // 获取文章列表
-        const { articles, columnTitle } = await getArticleList(page, columnUrl);
+        const { articles, columnTitle } = await getArticleList(page, columnUrl, timeout);
 
         if (articles.length === 0) {
             console.log(chalk.yellow('⚠️  未找到任何文章'));
@@ -1599,6 +1602,7 @@ program
     .option('-f, --format <format>', '输出格式: pdf, epub, both', 'pdf')
     .option('--headless <boolean>', '无头模式', true)
     .option('--delay <ms>', '每篇文章之间的延迟(ms)', '2000')
+    .option('--timeout <ms>', '页面加载超时时间(ms)', '60000')
     .option('--concurrency <number>', '并发下载数量', '5')
     .option('--dry-run', '预览模式，只显示文章列表')
     .option('--limit <number>', '限制下载数量（用于测试）')
