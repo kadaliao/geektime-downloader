@@ -9,6 +9,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as pdfLib from 'pdf-lib';
 import { outlinePdfFactory } from '@lillallol/outline-pdf';
+import epub from 'epub-gen-memory';
 
 const { PDFDocument } = pdfLib;
 const outlinePdf = outlinePdfFactory(pdfLib);
@@ -197,6 +198,21 @@ const PRINT_FIX_CSS = `
         overflow: visible !important;
         max-width: 100% !important;
         box-sizing: border-box !important;
+        /* 由于关闭了printBackground，用边框区分代码块 */
+        border: 1px solid #ddd !important;
+        padding: 10px !important;
+    }
+
+    /* 内联代码样式 */
+    code {
+        padding: 2px 6px !important;
+        border-radius: 3px !important;
+    }
+
+    /* 代码块容器样式 */
+    pre {
+        border-radius: 5px !important;
+        padding: 15px !important;
     }
 
     /* 确保图片适应页面且不溢出 */
@@ -682,6 +698,65 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
         // 等待文章内容加载
         await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 30000 });
 
+        // 优化图片大小：将大图片转换为合适的尺寸，减小PDF体积
+        await page.evaluate(() => {
+            const images = document.querySelectorAll('img');
+            const promises = Array.from(images).map(img => {
+                return new Promise((resolve) => {
+                    // 如果图片还未加载完成，等待加载
+                    if (!img.complete) {
+                        img.onload = () => processImage(img, resolve);
+                        img.onerror = () => resolve(); // 图片加载失败，跳过
+                    } else {
+                        processImage(img, resolve);
+                    }
+                });
+            });
+
+            function processImage(img, resolve) {
+                try {
+                    const maxWidth = 800; // 最大宽度
+                    const quality = 0.7; // JPEG质量（0-1）
+
+                    // 只处理较大的图片
+                    if (img.naturalWidth <= maxWidth) {
+                        resolve();
+                        return;
+                    }
+
+                    // 创建canvas压缩图片
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+
+                    const ratio = maxWidth / img.naturalWidth;
+                    canvas.width = maxWidth;
+                    canvas.height = img.naturalHeight * ratio;
+
+                    // 绘制图片
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                    // 转换为压缩后的data URL
+                    canvas.toBlob((blob) => {
+                        const url = URL.createObjectURL(blob);
+                        img.src = url;
+                        img.style.width = maxWidth + 'px';
+                        img.style.height = 'auto';
+                        resolve();
+                    }, 'image/jpeg', quality);
+                } catch (e) {
+                    // 如果压缩失败，至少限制大小
+                    img.style.maxWidth = '800px';
+                    img.style.height = 'auto';
+                    resolve();
+                }
+            }
+
+            return Promise.all(promises);
+        });
+
+        // 等待图片处理完成
+        await page.waitForTimeout(1000);
+
         // 生成 PDF
         const filename = `${String(index).padStart(3, '0')}_${article.title}.pdf`;
         const filepath = path.join(outputDir, filename);
@@ -695,7 +770,8 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
                 bottom: '20mm',
                 left: '15mm'
             },
-            printBackground: true
+            printBackground: false,  // 关闭背景打印，显著减小文件大小
+            preferCSSPageSize: false
         });
 
         return { success: true, title: article.title };
@@ -821,6 +897,65 @@ async function downloadArticle(page, article, outputDir, index, total) {
         // 等待文章内容加载
         await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 30000 });
 
+        // 优化图片大小：将大图片转换为合适的尺寸，减小PDF体积
+        await page.evaluate(() => {
+            const images = document.querySelectorAll('img');
+            const promises = Array.from(images).map(img => {
+                return new Promise((resolve) => {
+                    // 如果图片还未加载完成，等待加载
+                    if (!img.complete) {
+                        img.onload = () => processImage(img, resolve);
+                        img.onerror = () => resolve(); // 图片加载失败，跳过
+                    } else {
+                        processImage(img, resolve);
+                    }
+                });
+            });
+
+            function processImage(img, resolve) {
+                try {
+                    const maxWidth = 800; // 最大宽度
+                    const quality = 0.7; // JPEG质量（0-1）
+
+                    // 只处理较大的图片
+                    if (img.naturalWidth <= maxWidth) {
+                        resolve();
+                        return;
+                    }
+
+                    // 创建canvas压缩图片
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+
+                    const ratio = maxWidth / img.naturalWidth;
+                    canvas.width = maxWidth;
+                    canvas.height = img.naturalHeight * ratio;
+
+                    // 绘制图片
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                    // 转换为压缩后的data URL
+                    canvas.toBlob((blob) => {
+                        const url = URL.createObjectURL(blob);
+                        img.src = url;
+                        img.style.width = maxWidth + 'px';
+                        img.style.height = 'auto';
+                        resolve();
+                    }, 'image/jpeg', quality);
+                } catch (e) {
+                    // 如果压缩失败，至少限制大小
+                    img.style.maxWidth = '800px';
+                    img.style.height = 'auto';
+                    resolve();
+                }
+            }
+
+            return Promise.all(promises);
+        });
+
+        // 等待图片处理完成
+        await page.waitForTimeout(1000);
+
         // 生成 PDF
         const filename = `${String(index).padStart(3, '0')}_${article.title}.pdf`;
         const filepath = path.join(outputDir, filename);
@@ -834,7 +969,8 @@ async function downloadArticle(page, article, outputDir, index, total) {
                 bottom: '20mm',
                 left: '15mm'
             },
-            printBackground: true
+            printBackground: false,  // 关闭背景打印，显著减小文件大小
+            preferCSSPageSize: false
         });
 
         spinner.succeed(`[${index}/${total}] ${chalk.green('✓')} ${article.title}`);
@@ -950,6 +1086,244 @@ async function mergePDFs(outputDir, columnTitle, articles, deleteAfterMerge = fa
 
     } catch (error) {
         spinner.fail(`合并 PDF 失败: ${error.message}`);
+        console.error(chalk.gray(error.stack));
+        return null;
+    }
+}
+
+// 提取单篇文章的 HTML 内容（用于 EPUB 生成）
+async function extractArticleContent(page, article, index, total) {
+    try {
+        // 访问文章页面
+        await page.goto(article.url, { waitUntil: 'networkidle' });
+        await page.waitForTimeout(2000);
+
+        // 等待文章内容加载
+        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 30000 });
+
+        // 提取文章 HTML 内容
+        const content = await page.evaluate((titleText) => {
+            // 找到文章正文内容
+            const articleContent = document.querySelector('.Index_articleContent_QBG5G, .article-content, article, [class*="articleContent"]');
+
+            if (!articleContent) {
+                return null;
+            }
+
+            // 克隆正文以避免修改原始DOM
+            const contentClone = articleContent.cloneNode(true);
+
+            // 创建包含标题的完整HTML
+            let html = '';
+            if (titleText) {
+                html += `<h1>${titleText}</h1>`;
+            }
+            html += contentClone.innerHTML;
+
+            return html;
+        }, article.originalTitle || article.title);
+
+        return {
+            success: true,
+            title: article.originalTitle || article.title,
+            content: content || `<h1>${article.originalTitle || article.title}</h1><p>内容提取失败</p>`
+        };
+
+    } catch (error) {
+        return {
+            success: false,
+            title: article.originalTitle || article.title,
+            content: `<h1>${article.originalTitle || article.title}</h1><p>下载失败: ${error.message}</p>`,
+            error: error.message
+        };
+    }
+}
+
+// 并发提取文章内容（用于 EPUB）
+async function extractWithConcurrency(context, articles, concurrency = 5, delay = 2000) {
+    const results = [];
+    const total = articles.length;
+    let completed = 0;
+
+    const progressSpinner = ora(`提取进度: 0/${total}`).start();
+
+    // 创建并发池
+    const pool = [];
+    for (let i = 0; i < Math.min(concurrency, articles.length); i++) {
+        pool.push(context.newPage());
+    }
+    const pages = await Promise.all(pool);
+
+    // 处理队列
+    let currentIndex = 0;
+
+    const processNext = async (page, pageIndex) => {
+        while (currentIndex < articles.length) {
+            const index = currentIndex++;
+            const article = articles[index];
+
+            try {
+                const result = await extractArticleContent(page, article, index + 1, total);
+                results[index] = result;
+                completed++;
+
+                // 更新进度条
+                progressSpinner.text = `提取进度: ${completed}/${total}`;
+
+                if (result.success) {
+                    progressSpinner.stopAndPersist({
+                        symbol: chalk.green('✓'),
+                        text: `[${index + 1}/${total}] ${article.originalTitle || article.title}`
+                    });
+                } else {
+                    progressSpinner.stopAndPersist({
+                        symbol: chalk.red('✗'),
+                        text: `[${index + 1}/${total}] ${article.originalTitle || article.title} - ${result.error}`
+                    });
+                }
+
+                progressSpinner.start();
+                progressSpinner.text = `提取进度: ${completed}/${total}`;
+
+                // 添加延迟
+                if (currentIndex < articles.length) {
+                    await page.waitForTimeout(delay);
+                }
+            } catch (error) {
+                results[index] = {
+                    success: false,
+                    title: article.originalTitle || article.title,
+                    content: `<h1>${article.originalTitle || article.title}</h1><p>提取失败</p>`,
+                    error: error.message
+                };
+                completed++;
+
+                progressSpinner.stopAndPersist({
+                    symbol: chalk.red('✗'),
+                    text: `[${index + 1}/${total}] ${article.title} - ${error.message}`
+                });
+
+                progressSpinner.start();
+                progressSpinner.text = `提取进度: ${completed}/${total}`;
+            }
+        }
+    };
+
+    // 启动所有worker
+    await Promise.all(pages.map((page, idx) => processNext(page, idx)));
+
+    progressSpinner.succeed(`提取完成: ${completed}/${total}`);
+
+    // 关闭所有page
+    await Promise.all(pages.map(page => page.close()));
+
+    return results;
+}
+
+// 生成 EPUB 文件
+async function generateEPUB(outputDir, columnTitle, articles, contentResults) {
+    const spinner = ora('正在生成 EPUB 文件...').start();
+
+    try {
+        // 构建章节数据
+        const chapters = contentResults
+            .filter(result => result.success)
+            .map((result, index) => ({
+                title: result.title,
+                content: result.content,
+                excludeFromToc: false
+            }));
+
+        if (chapters.length === 0) {
+            spinner.warn('没有可用的章节内容，无法生成 EPUB');
+            return null;
+        }
+
+        const options = {
+            title: columnTitle,
+            author: '极客时间',
+            publisher: '极客时间',
+            version: 3,
+            css: `
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    padding: 20px;
+                }
+                h1 {
+                    font-size: 2em;
+                    font-weight: bold;
+                    margin-bottom: 0.8em;
+                    color: #000;
+                }
+                h2 {
+                    font-size: 1.5em;
+                    font-weight: bold;
+                    margin-top: 1.2em;
+                    margin-bottom: 0.6em;
+                }
+                h3 {
+                    font-size: 1.3em;
+                    font-weight: bold;
+                    margin-top: 1em;
+                    margin-bottom: 0.5em;
+                }
+                p {
+                    margin-bottom: 1em;
+                }
+                pre, code {
+                    background-color: #f5f5f5;
+                    border: 1px solid #ddd;
+                    border-radius: 3px;
+                    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+                }
+                code {
+                    padding: 2px 6px;
+                }
+                pre {
+                    padding: 15px;
+                    overflow-x: auto;
+                    white-space: pre-wrap;
+                    word-wrap: break-word;
+                }
+                img {
+                    max-width: 100%;
+                    height: auto;
+                }
+                table {
+                    border-collapse: collapse;
+                    width: 100%;
+                    margin: 1em 0;
+                }
+                th, td {
+                    border: 1px solid #ddd;
+                    padding: 8px;
+                    text-align: left;
+                }
+                th {
+                    background-color: #f5f5f5;
+                    font-weight: bold;
+                }
+            `,
+            content: chapters,
+            verbose: process.env.DEBUG ? true : false
+        };
+
+        // 生成 EPUB
+        spinner.text = '正在生成 EPUB...';
+        const content = await epub(options);
+
+        // 保存 EPUB 文件
+        const epubFileName = `${columnTitle}.epub`;
+        const epubFilePath = path.join(outputDir, epubFileName);
+        await fs.writeFile(epubFilePath, content);
+
+        spinner.succeed(`已生成 EPUB 文件: ${chalk.green(epubFileName)} (${chapters.length} 章)`);
+        return epubFilePath;
+
+    } catch (error) {
+        spinner.fail(`生成 EPUB 失败: ${error.message}`);
         console.error(chalk.gray(error.stack));
         return null;
     }
@@ -1085,33 +1459,89 @@ async function main(options) {
             console.log(chalk.gray(`📊 并发数: ${concurrency}\n`));
         }
 
-        const results = await downloadWithConcurrency(
-            context,
-            articlesToDownload,
-            outputDir,
-            concurrency,
-            parseInt(options.delay) || 2000
-        );
+        // 验证并规范化格式参数
+        const format = (options.format || 'pdf').toLowerCase();
+        if (!['pdf', 'epub', 'both'].includes(format)) {
+            console.error(chalk.red(`\n❌ 无效的格式: ${options.format}`));
+            console.log(chalk.yellow('支持的格式: pdf, epub, both\n'));
+            return;
+        }
 
-        // 统计结果
-        const successCount = results.filter(r => r.success).length;
-        const failCount = results.filter(r => !r.success).length;
+        // 根据格式选择处理方式
+        const needPdf = format === 'pdf' || format === 'both';
+        const needEpub = format === 'epub' || format === 'both';
 
-        console.log(chalk.bold.cyan('\n📊 下载统计\n'));
-        console.log(`  ${chalk.green('✓')} 成功: ${successCount}`);
-        console.log(`  ${chalk.red('✗')} 失败: ${failCount}`);
-        console.log(`  ${chalk.blue('📁')} 保存位置: ${outputDir}\n`);
+        let results, contentResults;
 
-        // 合并 PDF
-        if (options.merge !== false && successCount > 0) {
-            const mergedPath = await mergePDFs(
-                outputDir,
-                columnTitle,
+        // 生成 PDF
+        if (needPdf) {
+            console.log(chalk.cyan(`📄 格式: PDF${needEpub ? ' + EPUB' : ''}\n`));
+
+            results = await downloadWithConcurrency(
+                context,
                 articlesToDownload,
-                options.deleteAfterMerge
+                outputDir,
+                concurrency,
+                parseInt(options.delay) || 2000
             );
-            if (mergedPath) {
-                console.log(chalk.green(`\n✅ 合并完成: ${mergedPath}\n`));
+
+            // 统计结果
+            const successCount = results.filter(r => r.success).length;
+            const failCount = results.filter(r => !r.success).length;
+
+            console.log(chalk.bold.cyan('\n📊 PDF 下载统计\n'));
+            console.log(`  ${chalk.green('✓')} 成功: ${successCount}`);
+            console.log(`  ${chalk.red('✗')} 失败: ${failCount}`);
+            console.log(`  ${chalk.blue('📁')} 保存位置: ${outputDir}\n`);
+
+            // 合并 PDF
+            if (options.merge !== false && successCount > 0) {
+                const mergedPath = await mergePDFs(
+                    outputDir,
+                    columnTitle,
+                    articlesToDownload,
+                    options.deleteAfterMerge
+                );
+                if (mergedPath) {
+                    console.log(chalk.green(`\n✅ PDF 合并完成: ${mergedPath}\n`));
+                }
+            }
+        }
+
+        // 生成 EPUB
+        if (needEpub) {
+            if (needPdf) {
+                console.log(chalk.cyan('\n开始生成 EPUB...\n'));
+            } else {
+                console.log(chalk.cyan('📚 格式: EPUB\n'));
+            }
+
+            contentResults = await extractWithConcurrency(
+                context,
+                articlesToDownload,
+                concurrency,
+                parseInt(options.delay) || 2000
+            );
+
+            // 统计结果
+            const successCount = contentResults.filter(r => r.success).length;
+            const failCount = contentResults.filter(r => !r.success).length;
+
+            console.log(chalk.bold.cyan('\n📊 EPUB 提取统计\n'));
+            console.log(`  ${chalk.green('✓')} 成功: ${successCount}`);
+            console.log(`  ${chalk.red('✗')} 失败: ${failCount}\n`);
+
+            // 生成 EPUB
+            if (successCount > 0) {
+                const epubPath = await generateEPUB(
+                    outputDir,
+                    columnTitle,
+                    articlesToDownload,
+                    contentResults
+                );
+                if (epubPath) {
+                    console.log(chalk.green(`\n✅ EPUB 生成完成: ${epubPath}\n`));
+                }
             }
         }
 
@@ -1142,11 +1572,12 @@ async function main(options) {
 // 命令行参数
 program
     .name('geektime-dl')
-    .description('批量下载极客时间专栏文章为PDF')
-    .version('1.0.1')
+    .description('批量下载极客时间专栏文章为PDF或EPUB')
+    .version('1.1.0')
     .option('-u, --url <url>', '专栏文章URL（任意一篇）')
     .option('-c, --cookie <cookie>', 'Cookie字符串（用于认证）')
     .option('-o, --output <dir>', '输出目录', './downloads')
+    .option('-f, --format <format>', '输出格式: pdf, epub, both', 'pdf')
     .option('--headless <boolean>', '无头模式', true)
     .option('--delay <ms>', '每篇文章之间的延迟(ms)', '2000')
     .option('--concurrency <number>', '并发下载数量', '5')
@@ -1158,6 +1589,8 @@ program
 示例:
   $ geektime-dl --url "https://time.geekbang.org/column/article/200822" --cookie "your_cookie"
   $ geektime-dl -u "https://time.geekbang.org/column/article/200822" -c "your_cookie" --dry-run
+  $ geektime-dl --url "..." --cookie "..." --format epub  # 生成EPUB格式
+  $ geektime-dl --url "..." --cookie "..." --format both  # 同时生成PDF和EPUB
   $ npx @kadaliao/geektime-downloader --url "https://..." --cookie "..." --limit 5
   $ geektime-dl --url "..." --cookie "..." --no-merge  # 不合并PDF
     `)

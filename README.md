@@ -1,13 +1,14 @@
 # 极客时间专栏下载器
 
-一键批量下载极客时间专栏文章为 PDF 格式。支持通过 `npx` 直接运行，无需安装。
+一键批量下载极客时间专栏文章为 PDF 或 EPUB 格式。支持通过 `npx` 直接运行,无需安装。
 
 ## ✨ 特性
 
 - 🚀 **零安装**：支持 `npx` 直接使用
 - 📦 **批量下载**：自动获取整个专栏的所有文章
-- 📄 **完整内容**：自动处理滚动容器，确保 PDF 包含完整内容
-- 🔗 **智能合并**：自动将所有章节合并为一个 PDF，以专栏名称命名（可选）
+- 📄 **完整内容**：自动处理滚动容器，确保包含完整内容
+- 📚 **多种格式**：支持 PDF、EPUB 或同时生成两种格式
+- 🔗 **智能合并**：自动将所有章节合并为一个文件，以专栏名称命名（可选）
 - ⚙️ **灵活配置**：命令行参数或配置文件，任选其一
 - 🎨 **友好界面**：彩色进度提示，实时显示下载状态
 
@@ -79,6 +80,7 @@ geektime-dl [选项]
   -u, --url <url>        专栏文章URL（任意一篇）
   -c, --cookie <cookie>  Cookie字符串（用于认证）
   -o, --output <dir>     输出目录 (默认: "./downloads")
+  -f, --format <format>  输出格式: pdf, epub, both (默认: "pdf")
   --headless <boolean>   无头模式 (默认: true)
   --concurrency <number> 并发下载数量 (默认: 5)
   --delay <ms>           每篇文章间延迟(ms) (默认: 2000)
@@ -108,12 +110,30 @@ npx @kadaliao/geektime-downloader \
   --limit 2
 ```
 
-**下载整个专栏**
+**下载整个专栏（PDF 格式）**
 
 ```bash
 npx @kadaliao/geektime-downloader \
   -u "https://time.geekbang.org/column/article/200822" \
   -c "your_cookie"
+```
+
+**下载为 EPUB 格式**
+
+```bash
+npx @kadaliao/geektime-downloader \
+  -u "https://time.geekbang.org/column/article/200822" \
+  -c "your_cookie" \
+  --format epub
+```
+
+**同时生成 PDF 和 EPUB**
+
+```bash
+npx @kadaliao/geektime-downloader \
+  -u "https://time.geekbang.org/column/article/200822" \
+  -c "your_cookie" \
+  --format both
 ```
 
 **自定义输出目录**
@@ -138,7 +158,9 @@ npx @kadaliao/geektime-downloader \
 
 下载完成后，会在输出目录生成以下文件：
 
-### 单独章节 PDF（始终生成）
+### PDF 格式（--format pdf 或 both）
+
+**单独章节 PDF（始终生成）**
 
 ```
 001_开篇词___想吃透架构？你得看看真实、接地气的架构案例.pdf
@@ -150,7 +172,7 @@ npx @kadaliao/geektime-downloader \
 - 自动清理非法字符
 - 限制文件名长度
 
-### 合并后的 PDF（默认生成）
+**合并后的 PDF（默认生成）**
 
 ```
 专栏名称.pdf
@@ -159,7 +181,20 @@ npx @kadaliao/geektime-downloader \
 - 默认会将所有章节合并为一个完整的 PDF 文件
 - 文件名为专栏的标题（自动从 API 获取）
 - 包含所有成功下载的章节，按顺序排列
+- 自动添加书签导航
 - 如不需要合并版本，使用 `--no-merge` 选项
+
+### EPUB 格式（--format epub 或 both）
+
+```
+专栏名称.epub
+```
+
+- 标准 EPUB 3 格式
+- 完整的目录导航
+- 响应式排版，适合各种阅读器
+- 自动处理图片和代码块样式
+- 文件体积通常小于 PDF
 
 ## ⚙️ 配置方式
 
@@ -274,6 +309,7 @@ geektime-downloader/
 - **Chalk**: 彩色输出
 - **Ora**: 进度提示
 - **pdf-lib**: PDF 文档操作和合并
+- **epub-gen-memory**: EPUB 电子书生成
 
 ## 📄 License
 

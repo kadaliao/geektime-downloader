@@ -1,7 +1,7 @@
 {
   "name": "@kadaliao/geektime-downloader",
-  "version": "1.0.4",
-  "description": "极客时间专栏文章批量下载工具 - 支持一键下载整个专栏为PDF",
+  "version": "1.1.0",
+  "description": "极客时间专栏文章批量下载工具 - 支持一键下载整个专栏为PDF或EPUB",
   "type": "module",
   "main": "download.js",
   "bin": {
@@ -16,6 +16,8 @@
     "geektime",
     "downloader",
     "pdf",
+    "epub",
+    "ebook",
     "crawler",
     "极客时间"
   ],
@@ -32,6 +34,7 @@
     "@lillallol/outline-pdf": "^4.0.0",
     "chalk": "^5.3.0",
     "commander": "^11.1.0",
+    "epub-gen-memory": "^1.1.2",
     "ora": "^8.0.1",
     "pdf-lib": "^1.17.1",
     "playwright": "^1.40.0"
