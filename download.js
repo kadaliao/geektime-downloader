@@ -608,7 +608,7 @@ async function downloadWithConcurrency(context, articles, outputDir, concurrency
 async function downloadArticleSilent(page, article, outputDir, index, total) {
     try {
         // 访问文章页面
-        await page.goto(article.url, { waitUntil: 'networkidle' });
+        await page.goto(article.url, { waitUntil: 'networkidle', timeout: 60000 });
         await page.waitForTimeout(2000);
 
         // 注入打印修复样式
@@ -716,7 +716,7 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
         }, article.originalTitle || article.title);
 
         // 等待文章内容加载
-        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 30000 });
+        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 60000 });
 
         // 优化图片大小：将大图片转换为合适的尺寸，减小PDF体积
         await page.evaluate(() => {
@@ -807,7 +807,7 @@ async function downloadArticle(page, article, outputDir, index, total) {
 
     try {
         // 访问文章页面
-        await page.goto(article.url, { waitUntil: 'networkidle' });
+        await page.goto(article.url, { waitUntil: 'networkidle', timeout: 60000 });
         await page.waitForTimeout(2000);
 
         // 注入打印修复样式
@@ -915,7 +915,7 @@ async function downloadArticle(page, article, outputDir, index, total) {
         }, article.originalTitle || article.title);
 
         // 等待文章内容加载
-        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 30000 });
+        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 60000 });
 
         // 优化图片大小：将大图片转换为合适的尺寸，减小PDF体积
         await page.evaluate(() => {
@@ -1115,11 +1115,11 @@ async function mergePDFs(outputDir, columnTitle, articles, deleteAfterMerge = fa
 async function extractArticleContent(page, article, index, total) {
     try {
         // 访问文章页面
-        await page.goto(article.url, { waitUntil: 'networkidle' });
+        await page.goto(article.url, { waitUntil: 'networkidle', timeout: 60000 });
         await page.waitForTimeout(2000);
 
         // 等待文章内容加载
-        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 30000 });
+        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 60000 });
 
         // 提取文章 HTML 内容
         const content = await page.evaluate((titleText) => {
