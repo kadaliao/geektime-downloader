@@ -239,37 +239,88 @@ function parseCookies(cookieString) {
 
 // 获取专栏所有文章列表（通过API）
 async function getArticleList(page, columnUrl) {
-    const spinner = ora('正在获取文章列表...').start();
+    const spinner = ora('正在获取专栏信息...').start();
 
-    // 监听API响应并获取文章列表
+    // 从 URL 提取专栏 ID
+    let columnId = null;
+    const urlMatch = columnUrl.match(/\/column\/intro\/(\d+)|\/column\/article\/(\d+)/);
+    if (urlMatch) {
+        columnId = urlMatch[1] || urlMatch[2];
+    }
+
+    // 监听多个API响应
     let articlesData = null;
-    let handler = null;
+    let columnInfoData = null;
+    let articlesHandler = null;
+    let columnInfoHandler = null;
 
-    const responsePromise = new Promise((resolve, reject) => {
-        handler = async (response) => {
+    // 用于同步的 Promise
+    const articlesPromise = new Promise((resolve, reject) => {
+        articlesHandler = async (response) => {
             const url = response.url();
+            // 监听文章列表 API
             if (url.includes('/serv/v1/column/articles')) {
                 try {
                     const data = await response.json();
+                    if (process.env.DEBUG) {
+                        console.log(chalk.gray('\n收到文章列表API响应'));
+                    }
                     resolve(data);
                 } catch (e) {
-                    console.error('解析API响应失败:', e);
-                    reject(e);
+                    console.error('解析文章列表API失败:', e);
                 }
             }
         };
-        page.on('response', handler);
+        page.on('response', articlesHandler);
+    });
+
+    const columnInfoPromise = new Promise((resolve) => {
+        columnInfoHandler = async (response) => {
+            const url = response.url();
+            // 监听专栏详情相关的 API
+            if (url.includes('/serv/v1/column/intro') ||
+                url.includes('/serv/v3/column/info') ||
+                url.includes('/serv/v1/column/detail')) {
+                try {
+                    const data = await response.json();
+                    if (process.env.DEBUG) {
+                        console.log(chalk.gray(`收到专栏信息API响应: ${url}`));
+                    }
+                    resolve(data);
+                } catch (e) {
+                    console.error('解析专栏信息API失败:', e);
+                }
+            }
+        };
+        page.on('response', columnInfoHandler);
     });
 
     try {
-        // 访问页面以触发API调用
-        await page.goto(columnUrl, { waitUntil: 'networkidle' });
+        // 先设置监听器，再访问页面
+        spinner.text = '正在加载页面...';
+        await page.goto(columnUrl, { waitUntil: 'networkidle', timeout: 30000 });
 
-        // 等待API调用（最多10秒）
+        spinner.text = '正在获取文章列表...';
+
+        // 等待文章列表 API（必须的）
         articlesData = await Promise.race([
-            responsePromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error('API调用超时')), 10000))
+            articlesPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('文章列表API调用超时')), 30000))
         ]);
+
+        // 尝试等待专栏信息 API（可选的，5秒超时）
+        try {
+            columnInfoData = await Promise.race([
+                columnInfoPromise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+            ]);
+        } catch (e) {
+            // 获取专栏信息失败不是致命错误
+            if (process.env.DEBUG) {
+                console.log(chalk.gray('未获取到专栏信息API响应（将使用其他方法）'));
+            }
+        }
+
     } catch (error) {
         // 如果是因为浏览器关闭导致的错误，静默处理
         if (isShuttingDown || error.message.includes('Target page, context or browser has been closed')) {
@@ -279,10 +330,17 @@ async function getArticleList(page, columnUrl) {
         spinner.fail('获取文章列表失败');
         throw error;
     } finally {
-        // 确保移除监听器，防止内存泄漏
-        if (handler) {
+        // 确保移除所有监听器，防止内存泄漏
+        if (articlesHandler) {
             try {
-                page.off('response', handler);
+                page.off('response', articlesHandler);
+            } catch (e) {
+                // 忽略page已关闭的错误
+            }
+        }
+        if (columnInfoHandler) {
+            try {
+                page.off('response', columnInfoHandler);
             } catch (e) {
                 // 忽略page已关闭的错误
             }
@@ -294,21 +352,47 @@ async function getArticleList(page, columnUrl) {
         return { articles: [], columnTitle: 'unknown' };
     }
 
-    // 获取专栏标题 - 尝试多个可能的字段
-    let columnTitle = articlesData.data.column_title
-        || articlesData.data.column_subtitle
-        || articlesData.data.title
-        || articlesData.data.name
-        || articlesData.data.columnTitle;
-
-    // 如果还是没有，尝试从第一篇文章的信息中提取
-    if (!columnTitle && articlesData.data.list && articlesData.data.list.length > 0) {
-        const firstArticle = articlesData.data.list[0];
-        columnTitle = firstArticle.column_title || firstArticle.product_title;
+    // 调试信息：记录完整的API响应结构（仅在环境变量DEBUG存在时）
+    if (process.env.DEBUG) {
+        console.log(chalk.gray('\n========== 文章列表 API 响应数据 =========='));
+        console.log(chalk.gray(JSON.stringify(articlesData.data, null, 2)));
+        if (columnInfoData) {
+            console.log(chalk.gray('\n========== 专栏信息 API 响应数据 =========='));
+            console.log(chalk.gray(JSON.stringify(columnInfoData.data, null, 2)));
+        }
+        console.log(chalk.gray('=========================================\n'));
     }
 
-    // 如果API中没有，从页面标题提取
-    if (!columnTitle || columnTitle === '专栏') {
+    // 获取专栏标题 - 优先从专栏信息API获取
+    let columnTitle = '';
+
+    // 方法1（最优先）: 从专栏信息 API 数据中获取
+    if (columnInfoData && columnInfoData.data) {
+        columnTitle = columnInfoData.data.title
+            || columnInfoData.data.column_title
+            || columnInfoData.data.name
+            || columnInfoData.data.product_title
+            || columnInfoData.data.subtitle;
+    }
+
+    // 方法2: 从文章列表 API 数据中获取
+    if (!columnTitle || columnTitle === '专栏' || columnTitle === '极客时间') {
+        columnTitle = articlesData.data.column_title
+            || articlesData.data.column_subtitle
+            || articlesData.data.title
+            || articlesData.data.name
+            || articlesData.data.columnTitle
+            || articlesData.data.product_title;
+
+        // 如果还是没有，尝试从第一篇文章的信息中提取
+        if (!columnTitle && articlesData.data.list && articlesData.data.list.length > 0) {
+            const firstArticle = articlesData.data.list[0];
+            columnTitle = firstArticle.column_title || firstArticle.product_title;
+        }
+    }
+
+    // 方法3: 从页面标题提取
+    if (!columnTitle || columnTitle === '专栏' || columnTitle === '极客时间') {
         try {
             const pageTitle = await page.title();
             // 页面标题格式通常是："文章标题 - 专栏名称 - 极客时间"
@@ -321,8 +405,45 @@ async function getArticleList(page, columnUrl) {
         }
     }
 
-    // 最后的默认值
-    columnTitle = columnTitle || '专栏';
+    // 方法4: 从页面DOM中提取
+    if (!columnTitle || columnTitle === '专栏' || columnTitle === '极客时间') {
+        try {
+            columnTitle = await page.evaluate(() => {
+                // 尝试多个可能的选择器
+                const selectors = [
+                    '.column-title',
+                    '.product-title',
+                    '[class*="columnTitle"]',
+                    '[class*="productTitle"]',
+                    'h1.title',
+                    '.bread-crumb a:last-child'
+                ];
+
+                for (const selector of selectors) {
+                    const element = document.querySelector(selector);
+                    if (element && element.textContent && element.textContent.trim()) {
+                        return element.textContent.trim();
+                    }
+                }
+                return null;
+            });
+        } catch (e) {
+            console.error('从页面DOM提取失败:', e);
+        }
+    }
+
+    // 方法5: 使用专栏ID（如果提取到了）
+    if (!columnTitle || columnTitle === '专栏' || columnTitle === '极客时间') {
+        if (columnId) {
+            columnTitle = `专栏_${columnId}`;
+        }
+    }
+
+    // 最后的默认值（添加时间戳避免冲突）
+    if (!columnTitle || columnTitle === '专栏' || columnTitle === '极客时间') {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        columnTitle = `专栏_${timestamp}`;
+    }
 
     // 清理标题
     columnTitle = columnTitle
@@ -555,7 +676,7 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
         }, article.originalTitle || article.title);
 
         // 等待文章内容加载
-        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 10000 });
+        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 30000 });
 
         // 生成 PDF
         const filename = `${String(index).padStart(3, '0')}_${article.title}.pdf`;
@@ -694,7 +815,7 @@ async function downloadArticle(page, article, outputDir, index, total) {
         }, article.originalTitle || article.title);
 
         // 等待文章内容加载
-        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 10000 });
+        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 30000 });
 
         // 生成 PDF
         const filename = `${String(index).padStart(3, '0')}_${article.title}.pdf`;
@@ -878,11 +999,11 @@ async function main(options) {
 
     console.log(chalk.gray(`📄 专栏地址: ${columnUrl}`));
 
-    // 创建输出目录（相对于当前工作目录）
-    const outputDir = options.output || path.join(process.cwd(), 'downloads');
-    await fs.mkdir(outputDir, { recursive: true });
+    // 创建基础输出目录（相对于当前工作目录）
+    const baseOutputDir = options.output || path.join(process.cwd(), 'downloads');
+    await fs.mkdir(baseOutputDir, { recursive: true });
 
-    console.log(chalk.gray(`📁 输出目录: ${outputDir}\n`));
+    console.log(chalk.gray(`📁 基础输出目录: ${baseOutputDir}\n`));
 
     // 启动浏览器
     let browser;
@@ -927,6 +1048,11 @@ async function main(options) {
             console.log(chalk.yellow('⚠️  未找到任何文章'));
             return;
         }
+
+        // 为该专栏创建专用文件夹
+        const outputDir = path.join(baseOutputDir, columnTitle);
+        await fs.mkdir(outputDir, { recursive: true });
+        console.log(chalk.gray(`📁 专栏输出目录: ${outputDir}\n`));
 
         // 如果是 dry-run 模式，只显示列表
         if (options.dryRun) {
