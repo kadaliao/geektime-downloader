@@ -526,7 +526,7 @@ async function getArticleList(page, columnUrl, timeout = 60000) {
 }
 
 // 并发下载控制器
-async function downloadWithConcurrency(context, articles, outputDir, concurrency = 5, delay = 2000) {
+async function downloadWithConcurrency(context, articles, outputDir, concurrency = 5, delay = 2000, timeout = 60000) {
     const results = [];
     const total = articles.length;
     let completed = 0;
@@ -540,6 +540,12 @@ async function downloadWithConcurrency(context, articles, outputDir, concurrency
         pool.push(context.newPage());
     }
     const pages = await Promise.all(pool);
+
+    // 为每个页面设置默认超时
+    pages.forEach(page => {
+        page.setDefaultTimeout(timeout);
+        page.setDefaultNavigationTimeout(timeout);
+    });
 
     // 处理队列
     let currentIndex = 0;
@@ -608,7 +614,7 @@ async function downloadWithConcurrency(context, articles, outputDir, concurrency
 async function downloadArticleSilent(page, article, outputDir, index, total) {
     try {
         // 访问文章页面
-        await page.goto(article.url, { waitUntil: 'networkidle', timeout: 60000 });
+        await page.goto(article.url, { waitUntil: 'networkidle' });
         await page.waitForTimeout(2000);
 
         // 注入打印修复样式
@@ -716,7 +722,7 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
         }, article.originalTitle || article.title);
 
         // 等待文章内容加载
-        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 60000 });
+        await page.waitForSelector('.Index_articleContent_QBG5G, .content');
 
         // 优化图片大小：将大图片转换为合适的尺寸，减小PDF体积
         await page.evaluate(() => {
@@ -807,7 +813,7 @@ async function downloadArticle(page, article, outputDir, index, total) {
 
     try {
         // 访问文章页面
-        await page.goto(article.url, { waitUntil: 'networkidle', timeout: 60000 });
+        await page.goto(article.url, { waitUntil: 'networkidle' });
         await page.waitForTimeout(2000);
 
         // 注入打印修复样式
@@ -915,7 +921,7 @@ async function downloadArticle(page, article, outputDir, index, total) {
         }, article.originalTitle || article.title);
 
         // 等待文章内容加载
-        await page.waitForSelector('.Index_articleContent_QBG5G, .content', { timeout: 60000 });
+        await page.waitForSelector('.Index_articleContent_QBG5G, .content');
 
         // 优化图片大小：将大图片转换为合适的尺寸，减小PDF体积
         await page.evaluate(() => {
@@ -1115,7 +1121,7 @@ async function mergePDFs(outputDir, columnTitle, articles, deleteAfterMerge = fa
 async function extractArticleContent(page, article, index, total) {
     try {
         // 访问文章页面
-        await page.goto(article.url, { waitUntil: 'networkidle', timeout: 60000 });
+        await page.goto(article.url, { waitUntil: 'networkidle' });
         await page.waitForTimeout(2000);
 
         // 等待文章内容加载
@@ -1166,7 +1172,7 @@ async function extractArticleContent(page, article, index, total) {
 }
 
 // 并发提取文章内容（用于 EPUB）
-async function extractWithConcurrency(context, articles, concurrency = 5, delay = 2000) {
+async function extractWithConcurrency(context, articles, concurrency = 5, delay = 2000, timeout = 60000) {
     const results = [];
     const total = articles.length;
     let completed = 0;
@@ -1179,6 +1185,12 @@ async function extractWithConcurrency(context, articles, concurrency = 5, delay 
         pool.push(context.newPage());
     }
     const pages = await Promise.all(pool);
+
+    // 为每个页面设置默认超时
+    pages.forEach(page => {
+        page.setDefaultTimeout(timeout);
+        page.setDefaultNavigationTimeout(timeout);
+    });
 
     // 处理队列
     let currentIndex = 0;
@@ -1447,6 +1459,10 @@ async function main(options) {
         // 获取配置的超时时间
         const timeout = parseInt(options.timeout) || 60000;
 
+        // 为页面设置默认超时
+        page.setDefaultTimeout(timeout);
+        page.setDefaultNavigationTimeout(timeout);
+
         // 获取文章列表
         const { articles, columnTitle } = await getArticleList(page, columnUrl, timeout);
 
@@ -1510,7 +1526,8 @@ async function main(options) {
                 articlesToDownload,
                 outputDir,
                 concurrency,
-                parseInt(options.delay) || 2000
+                parseInt(options.delay) || 2000,
+                timeout
             );
 
             // 统计结果
@@ -1559,7 +1576,8 @@ async function main(options) {
                 context,
                 articlesToDownload,
                 concurrency,
-                parseInt(options.delay) || 2000
+                parseInt(options.delay) || 2000,
+                timeout
             );
 
             // 统计结果
