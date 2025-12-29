@@ -1326,18 +1326,17 @@ async function generateEPUB(outputDir, columnTitle, articles, contentResults) {
                     font-weight: bold;
                 }
             `,
-            content: chapters,
             verbose: process.env.DEBUG ? true : false
         };
 
-        // 生成 EPUB
+        // 生成 EPUB（注意：content 参数是第二个参数，不在 options 里）
         spinner.text = '正在生成 EPUB...';
-        const content = await epub(options);
+        const epubBuffer = await epub(options, chapters);
 
         // 保存 EPUB 文件
         const epubFileName = `${columnTitle}.epub`;
         const epubFilePath = path.join(outputDir, epubFileName);
-        await fs.writeFile(epubFilePath, content);
+        await fs.writeFile(epubFilePath, epubBuffer);
 
         spinner.succeed(`已生成 EPUB 文件: ${chalk.green(epubFileName)} (${chapters.length} 章)`);
         return epubFilePath;
