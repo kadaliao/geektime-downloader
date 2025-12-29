@@ -1,6 +1,6 @@
 {
   "name": "@kadaliao/geektime-downloader",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "极客时间专栏文章批量下载工具 - 支持一键下载整个专栏为PDF",
   "type": "module",
   "main": "download.js",
