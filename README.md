@@ -84,6 +84,7 @@ geektime-dl [选项]
   --headless <boolean>   无头模式 (默认: true)
   --concurrency <number> 并发下载数量 (默认: 5)
   --delay <ms>           每篇文章间延迟(ms) (默认: 2000)
+  --timeout <ms>         页面加载超时时间(ms) (默认: 60000)
   --dry-run              预览模式，只显示文章列表
   --limit <number>       限制下载数量（测试用）
   --no-merge             禁用PDF合并（默认会合并所有文章为一个PDF）

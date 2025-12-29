@@ -1150,11 +1150,17 @@ async function extractArticleContent(page, article, index, total) {
         };
 
     } catch (error) {
+        // 判断是否可能是 Cookie 失效
+        let errorMessage = error.message;
+        if (error.message.includes('Timeout') || error.message.includes('timeout')) {
+            errorMessage = 'Cookie 可能已失效或页面加载超时';
+        }
+
         return {
             success: false,
             title: article.originalTitle || article.title,
-            content: `<h1>${article.originalTitle || article.title}</h1><p>下载失败: ${error.message}</p>`,
-            error: error.message
+            content: `<h1>${article.originalTitle || article.title}</h1><p>下载失败: ${errorMessage}</p>`,
+            error: errorMessage
         };
     }
 }
@@ -1510,11 +1516,22 @@ async function main(options) {
             // 统计结果
             const successCount = results.filter(r => r.success).length;
             const failCount = results.filter(r => !r.success).length;
+            const timeoutCount = results.filter(r =>
+                !r.success && r.error && (r.error.includes('timeout') || r.error.includes('Timeout'))
+            ).length;
 
             console.log(chalk.bold.cyan('\n📊 PDF 下载统计\n'));
             console.log(`  ${chalk.green('✓')} 成功: ${successCount}`);
             console.log(`  ${chalk.red('✗')} 失败: ${failCount}`);
             console.log(`  ${chalk.blue('📁')} 保存位置: ${outputDir}\n`);
+
+            // 如果大部分失败都是超时，提示 Cookie 可能失效
+            if (timeoutCount > 0 && timeoutCount >= failCount * 0.8) {
+                console.log(chalk.yellow('⚠️  检测到大量超时错误，可能的原因：\n'));
+                console.log(chalk.gray('  1. Cookie 已失效 - 请重新获取 Cookie'));
+                console.log(chalk.gray('  2. 网络连接慢 - 尝试使用 --timeout 120000 增加超时时间'));
+                console.log(chalk.gray('  3. 需要登录或权限不足 - 确认已购买该专栏\n'));
+            }
 
             // 合并 PDF
             if (options.merge !== false && successCount > 0) {
@@ -1548,10 +1565,21 @@ async function main(options) {
             // 统计结果
             const successCount = contentResults.filter(r => r.success).length;
             const failCount = contentResults.filter(r => !r.success).length;
+            const timeoutCount = contentResults.filter(r =>
+                !r.success && r.error && (r.error.includes('Cookie') || r.error.includes('timeout') || r.error.includes('Timeout'))
+            ).length;
 
             console.log(chalk.bold.cyan('\n📊 EPUB 提取统计\n'));
             console.log(`  ${chalk.green('✓')} 成功: ${successCount}`);
             console.log(`  ${chalk.red('✗')} 失败: ${failCount}\n`);
+
+            // 如果大部分失败都是超时，提示 Cookie 可能失效
+            if (timeoutCount > 0 && timeoutCount >= failCount * 0.8) {
+                console.log(chalk.yellow('⚠️  检测到大量超时错误，可能的原因：\n'));
+                console.log(chalk.gray('  1. Cookie 已失效 - 请重新获取 Cookie'));
+                console.log(chalk.gray('  2. 网络连接慢 - 尝试使用 --timeout 120000 增加超时时间'));
+                console.log(chalk.gray('  3. 需要登录或权限不足 - 确认已购买该专栏\n'));
+            }
 
             // 生成 EPUB
             if (successCount > 0) {
