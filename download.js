@@ -237,7 +237,7 @@ function parseCookies(cookieString) {
     });
 }
 
-// 获取专栏所有文章列表（通过API）
+// 获取专栏所有文章列表(通过API)
 async function getArticleList(page, columnUrl) {
     const spinner = ora('正在获取专栏信息...').start();
 
@@ -462,7 +462,8 @@ async function getArticleList(page, columnUrl) {
 
     // 解析文章列表
     const rawArticles = articlesData.data.list;
-    const articles = rawArticles.map((article) => {
+
+    const articles = rawArticles.map((article, index) => {
         const title = article.article_title || article.article_sharetitle || 'Untitled';
         const id = article.id;
 
@@ -477,7 +478,10 @@ async function getArticleList(page, columnUrl) {
             title: cleanTitle,
             url: `https://time.geekbang.org/column/article/${id}`,
             originalTitle: title,
-            id: id
+            id: id,
+            sectionName: article.section_name || '',
+            chapterIndex: article.chapter_index || 0,
+            originalIndex: index
         };
     });
 
