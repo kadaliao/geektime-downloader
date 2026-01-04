@@ -428,9 +428,8 @@ async function sanitizeArticleHtml(page, rawHtml) {
 
         const images = template.content ? template.content.querySelectorAll('img') : [];
         images.forEach(img => {
-            if (!img.getAttribute('loading')) {
-                img.setAttribute('loading', 'lazy');
-            }
+            img.setAttribute('loading', 'eager');
+            img.setAttribute('decoding', 'sync');
             img.style.maxWidth = '100%';
             img.style.height = 'auto';
         });
@@ -964,6 +963,22 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
         if (process.env.DEBUG) {
             console.log(chalk.gray(`[silent] 已设置页面内容 ${article.id}`));
         }
+        if (process.env.DEBUG) {
+            console.log(chalk.gray(`[silent] 等待图片初步加载 ${article.id}`));
+        }
+        try {
+            await page.waitForFunction(() => {
+                const imgs = Array.from(document.images || []);
+                if (imgs.length === 0) {
+                    return true;
+                }
+                return imgs.every(img => img.complete);
+            }, { timeout: 30000 });
+        } catch (waitError) {
+            if (process.env.DEBUG) {
+                console.log(chalk.gray(`[silent] 图片初步加载等待超时 ${article.id}: ${waitError?.message || waitError}`));
+            }
+        }
         try {
             await page.waitForLoadState('networkidle', { timeout: 5000 });
             if (process.env.DEBUG) {
@@ -991,7 +1006,7 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
                             resolve();
                         }
                     };
-                    const attachTimeout = () => setTimeout(safeResolve, 3000);
+                    const attachTimeout = () => setTimeout(safeResolve, 15000);
                     let fallbackTimer = null;
 
                     // 如果图片还未加载完成，等待加载
@@ -1065,7 +1080,7 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
         }
 
         // 等待图片处理完成
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(30000);
         if (process.env.DEBUG) {
             console.log(chalk.gray(`[silent] 已准备生成PDF ${article.id}`));
         }
