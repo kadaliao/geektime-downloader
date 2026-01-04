@@ -7,6 +7,7 @@ import ora from 'ora';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import * as pdfLib from 'pdf-lib';
 import { outlinePdfFactory } from '@lillallol/outline-pdf';
 import epubGenMemory from 'epub-gen-memory';
@@ -14,6 +15,8 @@ import epubGenMemory from 'epub-gen-memory';
 const { PDFDocument } = pdfLib;
 const outlinePdf = outlinePdfFactory(pdfLib);
 const epub = epubGenMemory.default || epubGenMemory;
+const require = createRequire(import.meta.url);
+const { version } = require('./package.json');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -2230,7 +2233,7 @@ async function main(options) {
 program
     .name('geektime-dl')
     .description('批量下载极客时间专栏文章为PDF或EPUB')
-    .version('1.1.1')
+    .version(version)
     .option('-u, --url <url>', '专栏文章URL（任意一篇）')
     .option('-c, --cookie <cookie>', 'Cookie字符串（用于认证）')
     .option('-o, --output <dir>', '输出目录', './downloads')
