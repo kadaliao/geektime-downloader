@@ -2230,7 +2230,7 @@ async function main(options) {
 program
     .name('geektime-dl')
     .description('批量下载极客时间专栏文章为PDF或EPUB')
-    .version('1.1.0')
+    .version('1.1.1')
     .option('-u, --url <url>', '专栏文章URL（任意一篇）')
     .option('-c, --cookie <cookie>', 'Cookie字符串（用于认证）')
     .option('-o, --output <dir>', '输出目录', './downloads')
