@@ -11,6 +11,7 @@
 - 🔗 **智能合并**：自动将所有章节合并为一个文件，以专栏名称命名（可选）
 - ⚙️ **灵活配置**：命令行参数或配置文件，任选其一
 - 🎨 **友好界面**：彩色进度提示，实时显示下载状态
+- 🧾 **代码块还原**：自动识别滚动容器/高亮组件，还原成标准代码块
 
 ## 🚀 快速开始
 
@@ -35,14 +36,34 @@ npx @kadaliao/geektime-downloader \
 ```json
 {
   "cookie": "你的完整 cookie 字符串",
+  "cookieFile": "./cookies.json",
   "columnUrl": "https://time.geekbang.org/column/article/200822"
 }
 ```
+
+> `cookieFile` 可选，用于直接引用浏览器导出的 `cookies.json`。
 
 2. 运行命令：
 
 ```bash
 npx @kadaliao/geektime-downloader
+```
+
+### 方式三：cookies.json 文件导入
+
+适合从浏览器或插件导出的 JSON Cookie（如 Chrome 的 Cookie-Editor 导出）：
+
+1. 在浏览器中登录极客时间，使用插件或 DevTools 导出 `cookies.json`
+2. 将文件放在当前目录（文件名必须是 `cookies.json`），程序会自动检测  
+   或者运行时显式指定：`--cookie-file ./cookies.json`
+3. 其他参数与前两种方式一致
+
+示例：
+
+```bash
+npx @kadaliao/geektime-downloader \
+  --url "https://time.geekbang.org/column/article/200822" \
+  --cookie-file ./cookies.json
 ```
 
 ## 📖 使用说明
@@ -79,6 +100,7 @@ geektime-dl [选项]
   -V, --version          显示版本号
   -u, --url <url>        专栏文章URL（任意一篇）
   -c, --cookie <cookie>  Cookie字符串（用于认证）
+      --cookie-file <path>  从 JSON 文件导入 Cookie（如 cookies.json）
   -o, --output <dir>     输出目录 (默认: "./downloads")
   -f, --format <format>  输出格式: pdf, epub, both (默认: "pdf")
   --headless <boolean>   无头模式 (默认: true)
@@ -117,6 +139,14 @@ npx @kadaliao/geektime-downloader \
 npx @kadaliao/geektime-downloader \
   -u "https://time.geekbang.org/column/article/200822" \
   -c "your_cookie"
+```
+
+**使用 cookies.json（自动检测或手动指定）**
+
+```bash
+npx @kadaliao/geektime-downloader \
+  -u "https://time.geekbang.org/column/article/200822" \
+  --cookie-file ./cookies.json
 ```
 
 **下载为 EPUB 格式**

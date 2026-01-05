@@ -6,7 +6,10 @@ import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
+import { load as loadHtml } from 'cheerio';
+import crypto from 'crypto';
+import mime from 'mime-types';
 import { createRequire } from 'module';
 import * as pdfLib from 'pdf-lib';
 import { outlinePdfFactory } from '@lillallol/outline-pdf';
@@ -245,9 +248,335 @@ const PRINT_FIX_CSS = `
 }
 `;
 
+// 代码高亮彩色语法（覆盖Prism/Highlight.js常见class）
+const CODE_HIGHLIGHT_CSS = `
+pre[class*="language-"],
+code[class*="language-"],
+pre code,
+code.hljs,
+pre.hljs {
+    color: #2d2d2d;
+    background: #f7f7f7;
+}
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata,
+.hljs-comment,
+.hljs-quote {
+    color: #6a737d;
+    font-style: italic;
+}
+.token.punctuation,
+.hljs-punctuation {
+    color: #5e6687;
+}
+.token.property,
+.token.tag,
+.token.constant,
+.token.symbol,
+.token.deleted,
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-subst,
+.hljs-attribute {
+    color: #d73a49;
+}
+.token.boolean,
+.token.number,
+.token.selector,
+.token.attr-name,
+.token.char,
+.token.builtin,
+.token.inserted,
+.hljs-number,
+.hljs-literal,
+.hljs-variable,
+.hljs-template-variable {
+    color: #b76bff;
+}
+.token.string,
+.token.attr-value,
+.token.operator,
+.token.entity,
+.token.url,
+.token.statement,
+.token.regex,
+.token.important,
+.token.variable,
+.token.bold,
+.hljs-string,
+.hljs-doctag,
+.hljs-addition {
+    color: #22863a;
+}
+.token.function,
+.token.class-name,
+.token.keyword,
+.hljs-title,
+.hljs-section,
+.hljs-type,
+.hljs-selector-id,
+.hljs-selector-class {
+    color: #005cc5;
+}
+.token.operator,
+.token.entity,
+.token.url,
+.hljs-bullet,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-link {
+    color: #e36209;
+}
+.token.italic {
+    font-style: italic;
+}
+.token.bold {
+    font-weight: 600;
+}
+.token.deleted,
+.hljs-deletion {
+    color: #b31d28;
+}
+`;
+
 const GEEKTIME_BASE_URL = 'https://time.geekbang.org';
-const ARTICLE_API_URL = `${GEEKTIME_BASE_URL}/serv/v1/article`;
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const EPUB_IMAGE_BATCH_SIZE = 5;
+const TEMP_ASSET_PREFIX = '__epub_assets__';
+const ARTICLE_CONTENT_SELECTORS = [
+    '#article-content',
+    '#article-content-container',
+    '.article-content',
+    '.article-detail',
+    '.article-detail-content',
+    '.article-content__body',
+    '.Index_articleContent_QBG5G',
+    '.ArticleContent_articleContent',
+    'article .content',
+    'main article',
+    '.content-container article'
+];
+const ARTICLE_REMOVAL_SELECTORS = [
+    'nav', 'header', 'footer', 'aside',
+    '.comment', '.comments', '.Index_comment', '.CommentArea', '.comment-area', '.CommentWrapper', '.Comment-module', '.CommentList',
+    '#comments', '#comment', '[data-section="comment"]',
+    '.recommend', '.recommendation', '.related', '.advertisement', '.ad', '.banner',
+    '.subscribe', '.subscription', '.toolbar', '.Index_shareIcons_1vtJa',
+    '.keyboard-wrapper', '.app-download', '.article-actions', '.article-bottom',
+    '.note', '.notes', '.annotation', '.translation', '.trans', '.translator',
+    '.audio', '.audio-player', '.voice', '.player', '.geek-player', '.podcast', '.radio',
+    '.AudioPlayer', '.VoicePlayer', '.AudioWrapper', '.voice-player',
+    '.reward', '.appreciate', '.appreciation', '.donate', '.sponsor', '.thanks', '.support',
+    '.qrcode', '.qr-code', '.qr', '.promotion', '.promo', '.ad-banner',
+    '.copyright', '.statement', '.disclaimer',
+    '.app-download-banner', '.article-plugin', '.article-notification', '.float-bar',
+    '.article-plugin-wrapper',
+    '[class*="Share"]', '[data-widget="audio"]', '[data-widget="Audio"]',
+    'audio', 'video',
+    '[class*="Note"]', '[class*="note"]', '[class*="Translation"]', '[class*="translation"]',
+    '[class*="Audio"]', '[class*="audio"]', '[class*="Reward"]', '[class*="reward"]',
+    '[data-plugin]', '[data-track]', '[data-track-section]', '[data-translation]', '[data-audio]',
+    '[data-role="toolbar"]',
+    'button[data-role="comment"]',
+    'script[data-role="plugin"]',
+    '.ArticleBottomBar',
+    '.bottom-toolbar'
+];
+const ARTICLE_PLUGIN_KEYWORDS = [
+    'note', 'translation', 'audio', 'player', 'reward', 'donate',
+    'appreciation', 'sponsor', 'qrcode', 'toolbar', 'plugin',
+    'copyright', 'geeknote', 'bilingual', 'comment'
+];
+const ARTICLE_MINDMAP_SELECTORS = [
+    '.mindmap', '.mind-map', '.MindMap', '.Mind-map',
+    '[data-type="mindmap"]', '[data-role="mindmap"]', '[data-widget="mindmap"]',
+    '[class*="MindMap"]', '[class*="mindMap"]'
+];
+const PDF_BASE_CSS = `
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    color: #1f2329;
+}
+.article-pdf-wrapper {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 48px 56px 60px;
+}
+.article-title {
+    font-size: 32px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    line-height: 1.3;
+    color: #111;
+}
+.article-meta {
+    color: #7f8c8d;
+    font-size: 14px;
+    margin-bottom: 32px;
+}
+.article-content p,
+.article-content div {
+    margin: 1.1em 0;
+    line-height: 1.9;
+    font-size: 16px;
+}
+.article-content p + p,
+.article-content div + p,
+.article-content p + div {
+    margin-top: 1.6em;
+}
+.article-content h2,
+.article-content h3,
+.article-content h4 {
+    margin-top: 2.2em;
+    margin-bottom: 1em;
+    font-weight: 600;
+    color: #111;
+}
+.article-content h2 {
+    font-size: 26px;
+}
+.article-content h3 {
+    font-size: 22px;
+}
+.article-content h4 {
+    font-size: 18px;
+}
+.article-content img {
+    max-width: 100%;
+    margin: 1.2em auto;
+    display: block;
+    border-radius: 4px;
+}
+.article-content blockquote {
+    margin: 1.3em 0;
+    padding: 0.8em 1.2em;
+    border-left: 4px solid #d0d7de;
+    background: #f8fafc;
+    color: #4b5563;
+}
+.article-content ul,
+.article-content ol {
+    margin: 1em 0;
+    padding-left: 2em;
+}
+.article-content pre {
+    background: #0b1220;
+    color: #d9e2ff;
+    border-radius: 6px;
+    padding: 16px 20px;
+    overflow: auto;
+    margin: 1.4em 0;
+    font-size: 14px;
+    line-height: 1.6;
+}
+.article-content pre code {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: inherit;
+}
+.article-content code {
+    font-family: "Fira Code", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    background: rgba(15, 23, 42, 0.08);
+    border-radius: 4px;
+    padding: 0.2em 0.4em;
+}
+.article-content hr {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 2.4em 0;
+}
+`;
+
+async function fileExists(filePath) {
+    try {
+        await fs.access(filePath);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function normalizeCookieSameSite(value) {
+    if (!value) return undefined;
+    const lower = value.toString().toLowerCase();
+    if (lower.includes('lax')) return 'Lax';
+    if (lower.includes('strict')) return 'Strict';
+    if (lower.includes('none') || lower.includes('no_restriction')) return 'None';
+    return undefined;
+}
+
+function normalizeCookieDomain(domain) {
+    if (!domain || typeof domain !== 'string') {
+        return '.geekbang.org';
+    }
+    return domain.trim();
+}
+
+async function loadCookiesFromJsonFile(filePath) {
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+    let raw;
+    try {
+        raw = await fs.readFile(absolutePath, 'utf-8');
+    } catch (error) {
+        throw new Error(`无法读取 cookie JSON 文件: ${error.message}`);
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (error) {
+        throw new Error(`cookie JSON 解析失败: ${error.message}`);
+    }
+
+    if (!Array.isArray(parsed)) {
+        throw new Error('cookie JSON 必须是数组格式');
+    }
+
+    const cookies = parsed
+        .filter(item => item && typeof item.name === 'string' && item.value !== undefined)
+        .map(item => {
+            const cookieValue = typeof item.value === 'string' ? item.value : String(item.value ?? '');
+            const cookie = {
+                name: item.name,
+                value: cookieValue,
+                domain: normalizeCookieDomain(item.domain),
+                path: item.path || '/',
+                secure: Boolean(item.secure),
+                httpOnly: Boolean(item.httpOnly)
+            };
+            const sameSite = normalizeCookieSameSite(item.sameSite);
+            if (sameSite) {
+                cookie.sameSite = sameSite;
+            }
+            return cookie;
+        });
+
+    if (cookies.length === 0) {
+        throw new Error('cookie JSON 中没有有效的 cookie 项');
+    }
+
+    const withExpiry = parsed
+        .filter(item => item && typeof item.name === 'string' && item.value !== undefined)
+        .map((item, idx) => ({ item, target: cookies[idx] }))
+        .filter(entry => entry.target);
+    withExpiry.forEach(({ item, target }) => {
+        const expires = item.expires || item.expirationDate;
+        if (expires) {
+            target.expires = Math.floor(Number(expires));
+        }
+    });
+
+    const cookieHeader = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+
+    return { cookieHeader, cookies, absolutePath };
+}
 
 // 解析 cookie 字符串
 function parseCookies(cookieString) {
@@ -272,96 +601,308 @@ function normalizeArticleHtml(html = '') {
         .replace(/href='\/\//gi, "href='https://");
 }
 
-async function fetchArticleData(context, articleId) {
-    const maxAttempts = 3;
-    const refererUrl = `${GEEKTIME_BASE_URL}/column/article/${articleId}`;
-    let lastError = null;
+function resolveImageUrl(rawSrc = '') {
+    if (!rawSrc) return null;
+    let src = rawSrc.trim();
+    if (!src || src.startsWith('data:') || src.startsWith('blob:')) {
+        return null;
+    }
+    if (src.startsWith('//')) {
+        return `https:${src}`;
+    }
+    if (src.startsWith('/')) {
+        return `${GEEKTIME_BASE_URL}${src}`;
+    }
+    if (/^https?:/i.test(src)) {
+        return src;
+    }
+    try {
+        return new URL(src, GEEKTIME_BASE_URL).toString();
+    } catch {
+        return null;
+    }
+}
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+async function fetchBinaryWithContext(context, url) {
+    const headers = {
+        'user-agent': DEFAULT_USER_AGENT,
+        'accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        'referer': GEEKTIME_BASE_URL,
+        ...(globalCookieHeader ? { 'cookie': globalCookieHeader } : {})
+    };
+    const response = await context.request.get(url, { headers, failOnStatusCode: true });
+    if (!response.ok()) {
+        throw new Error(`HTTP ${response.status()} ${response.statusText()}`);
+    }
+    const buffer = await response.body();
+    const headersMap = response.headers();
+    return {
+        buffer,
+        contentType: headersMap['content-type'] || '',
+        finalUrl: response.url()
+    };
+}
+
+function determineImageExtension(resourceUrl = '', contentType = '') {
+    let ext = '';
+    if (resourceUrl) {
         try {
-            const response = await context.request.post(ARTICLE_API_URL, {
-                headers: {
-                    'user-agent': DEFAULT_USER_AGENT,
-                    'content-type': 'application/json',
-                    'accept': 'application/json, text/plain, */*',
-                    'origin': GEEKTIME_BASE_URL,
-                    'referer': refererUrl,
-                    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                    ...(globalCookieHeader ? { 'cookie': globalCookieHeader } : {})
-                },
-                data: {
-                    id: String(articleId),
-                    include_neighbors: true,
-                    is_freelyread: true
-                }
-            });
+            const { pathname } = new URL(resourceUrl);
+            ext = path.extname(pathname).replace('.', '');
+        } catch {
+            ext = '';
+        }
+    }
+    if (!ext && contentType) {
+        ext = (mime.extension(contentType) || '').toString();
+    }
+    if (!ext) {
+        ext = 'bin';
+    }
+    return ext.toLowerCase();
+}
 
-            const bodyText = await response.text();
+async function downloadImageToLocal(context, normalizedUrl, assetsDir, articleIndex) {
+    const { buffer, contentType, finalUrl } = await fetchBinaryWithContext(context, normalizedUrl);
+    const ext = determineImageExtension(finalUrl || normalizedUrl, contentType);
+    const hash = crypto.createHash('md5').update(normalizedUrl).digest('hex').slice(0, 10);
+    const filename = `article_${String(articleIndex + 1).padStart(3, '0')}_${hash}.${ext}`;
+    const filepath = path.join(assetsDir, filename);
+    await fs.writeFile(filepath, buffer);
+    return {
+        fileUrl: pathToFileURL(filepath).href,
+        localPath: filepath
+    };
+}
 
-            if (!response.ok()) {
-                throw new Error(`API请求失败: ${response.status()} ${response.statusText()} - ${bodyText.slice(0, 160)}`);
-            }
+function mapSameSiteForExport(value) {
+    if (!value) return 'unspecified';
+    const lower = value.toString().toLowerCase();
+    if (lower.includes('strict')) return 'strict';
+    if (lower.includes('lax')) return 'lax';
+    if (lower.includes('none')) return 'no_restriction';
+    return 'unspecified';
+}
 
-            let json;
+async function updateGlobalCookieHeaderFromContext(context) {
+    if (!context) return;
+    try {
+        const cookies = await context.cookies();
+        if (!cookies || cookies.length === 0) {
+            return;
+        }
+        const header = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+        if (header) {
+            globalCookieHeader = header;
+        }
+    } catch {
+        // ignore
+    }
+}
+
+async function persistCookiesToFile(context, targetPath) {
+    if (!context || !targetPath) return;
+    try {
+        const cookies = await context.cookies();
+        if (!cookies || cookies.length === 0) {
+            return;
+        }
+        const serialized = cookies.map(cookie => ({
+            domain: cookie.domain,
+            expirationDate: cookie.expires || undefined,
+            hostOnly: !cookie.domain.startsWith('.'),
+            httpOnly: cookie.httpOnly,
+            name: cookie.name,
+            path: cookie.path,
+            sameSite: mapSameSiteForExport(cookie.sameSite),
+            secure: cookie.secure,
+            session: !cookie.expires,
+            storeId: '0',
+            value: cookie.value
+        }));
+        await fs.writeFile(targetPath, JSON.stringify(serialized, null, 2), 'utf-8');
+        console.log(chalk.gray(`🍪 已刷新 Cookie → ${targetPath}`));
+    } catch (error) {
+        console.log(chalk.yellow(`⚠️  保存 Cookie 失败: ${error.message}`));
+    }
+}
+
+async function saveDataUriImage(dataUri, assetsDir, articleIndex, dataIndex) {
+    if (!dataUri || typeof dataUri !== 'string') {
+        return null;
+    }
+    const match = dataUri.match(/^data:(.+?);base64,(.+)$/i);
+    if (!match) {
+        return null;
+    }
+    const mimeType = match[1] || 'application/octet-stream';
+    const base64Data = match[2];
+    let buffer;
+    try {
+        buffer = Buffer.from(base64Data, 'base64');
+    } catch {
+        return null;
+    }
+    if (!buffer || buffer.length === 0) {
+        return null;
+    }
+    const ext = mime.extension(mimeType) || 'bin';
+    const filename = `article_${String(articleIndex + 1).padStart(3, '0')}_inline_${String(dataIndex).padStart(3, '0')}.${ext}`;
+    const filepath = path.join(assetsDir, filename);
+    await fs.writeFile(filepath, buffer);
+    return pathToFileURL(filepath).href;
+}
+
+async function rewriteImagesWithLocalFiles(context, htmlContent, assetsDir, articleIndex, sharedCache) {
+    if (!htmlContent || htmlContent.indexOf('<img') === -1) {
+        return { html: htmlContent, replaced: 0 };
+    }
+
+    const $ = loadHtml(htmlContent, { decodeEntities: false });
+    const images = $('img');
+    if (images.length === 0) {
+        return { html: htmlContent, replaced: 0 };
+    }
+
+    const pendingDownloads = new Map();
+    const dataUriImages = [];
+
+    images.each((_, element) => {
+        const originalSrc = $(element).attr('src') || '';
+        if (/^data:/i.test(originalSrc.trim())) {
+            dataUriImages.push({ element, src: originalSrc.trim() });
+            return;
+        }
+        const normalizedUrl = resolveImageUrl(originalSrc);
+        if (!normalizedUrl) {
+            return;
+        }
+        if (sharedCache.has(normalizedUrl)) {
+            return;
+        }
+        if (!pendingDownloads.has(normalizedUrl)) {
+            pendingDownloads.set(normalizedUrl, null);
+        }
+    });
+
+    const downloadTargets = Array.from(pendingDownloads.keys());
+    for (let i = 0; i < downloadTargets.length; i += EPUB_IMAGE_BATCH_SIZE) {
+        const batch = downloadTargets.slice(i, i + EPUB_IMAGE_BATCH_SIZE).map(async (targetUrl) => {
             try {
-                json = JSON.parse(bodyText);
-            } catch (parseError) {
-                throw new Error(`API响应解析失败: ${parseError.message} - ${bodyText.slice(0, 160)}`);
+                const info = await downloadImageToLocal(context, targetUrl, assetsDir, articleIndex);
+                sharedCache.set(targetUrl, info.fileUrl);
+                pendingDownloads.set(targetUrl, info.fileUrl);
+            } catch (error) {
+                console.log(chalk.yellow(`  ⚠️  图片下载失败: ${targetUrl} (${error.message})`));
+                pendingDownloads.set(targetUrl, null);
             }
+        });
+        await Promise.all(batch);
+    }
 
-            if (!json || json.code !== 0 || !json.data) {
-                throw new Error(`无法获取完整文章内容: ${bodyText.slice(0, 160)}`);
+    images.each((_, element) => {
+        const originalSrc = $(element).attr('src') || '';
+        if (/^data:/i.test(originalSrc.trim())) {
+            return;
+        }
+        const normalizedUrl = resolveImageUrl(originalSrc);
+        if (!normalizedUrl) {
+            return;
+        }
+        const localUrl = sharedCache.get(normalizedUrl) || pendingDownloads.get(normalizedUrl);
+        if (localUrl) {
+            $(element).attr('src', localUrl);
+        }
+    });
+
+    let processedInlineImages = 0;
+    for (let i = 0; i < dataUriImages.length; i++) {
+        const item = dataUriImages[i];
+        try {
+            const localUrl = await saveDataUriImage(item.src, assetsDir, articleIndex, i);
+            if (localUrl) {
+                $(item.element).attr('src', localUrl);
+                processedInlineImages++;
+            } else {
+                $(item.element).remove();
             }
-
-            if (!json.data.article_content) {
-                throw new Error('文章内容为空，可能需要更新 Cookie 或重新获取权限');
-            }
-
-            return json.data;
         } catch (error) {
-            lastError = error;
-            if (attempt < maxAttempts) {
-                await new Promise(resolve => setTimeout(resolve, attempt * 700));
-            }
+            console.log(chalk.yellow(`  ⚠️  内联图片处理失败: ${error.message}`));
+            $(item.element).remove();
         }
     }
 
-    throw lastError || new Error('未知错误导致文章内容获取失败');
+    const finalHtml = $.root().html() || htmlContent;
+
+    return {
+        html: finalHtml,
+        replaced: downloadTargets.length + processedInlineImages
+    };
+}
+
+async function rewriteEpubContentImages(context, contentResults, assetsDir) {
+    const cache = new Map();
+    let processedArticles = 0;
+    let processedImages = 0;
+
+    const spinner = ora('正在缓存 EPUB 图片...').start();
+
+    const updatedResults = [];
+    for (let i = 0; i < contentResults.length; i++) {
+        const result = contentResults[i];
+        if (!result || !result.success || !result.content) {
+            updatedResults.push(result);
+            continue;
+        }
+        try {
+            const { html, replaced } = await rewriteImagesWithLocalFiles(context, result.content, assetsDir, i, cache);
+            processedImages += replaced;
+            if (replaced > 0) {
+                processedArticles++;
+            }
+            updatedResults.push({ ...result, content: html });
+        } catch (error) {
+            spinner.stop();
+            console.log(chalk.yellow(`⚠️  处理第 ${i + 1} 篇文章图片失败: ${error.message}`));
+            spinner.start();
+            updatedResults.push(result);
+        }
+    }
+
+    if (processedImages === 0) {
+        spinner.stop();
+        console.log(chalk.gray('📷 没有检测到需要缓存的图片'));
+    } else {
+        spinner.succeed(`已缓存 EPUB 图片: ${processedImages} 张（${processedArticles} 篇文章）`);
+    }
+
+    return updatedResults;
+}
+
+async function createTempAssetsDir(baseDir) {
+    const tempDir = path.join(baseDir, `${TEMP_ASSET_PREFIX}_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 8)}`);
+    await fs.mkdir(tempDir, { recursive: true });
+    return tempDir;
+}
+
+async function cleanupTempAssetsDir(dir) {
+    if (!dir) return;
+    try {
+        await fs.rm(dir, { recursive: true, force: true });
+    } catch (error) {
+        console.log(chalk.gray(`清理临时目录失败: ${error.message}`));
+    }
 }
 
 async function sanitizeArticleHtml(page, rawHtml) {
-    return page.evaluate((html) => {
+    return page.evaluate(({ html, removalSelectors, pluginKeywords, mindmapSelectors }) => {
         const template = document.createElement('template');
         template.innerHTML = html;
 
-        const removalSelectors = [
-            'nav', 'header', 'footer', 'aside',
-            '.comment', '.comments', '.Index_comment',
-            '.recommend', '.recommendation', '.related', '.advertisement', '.ad', '.banner',
-            '.subscribe', '.subscription', '.toolbar', '.Index_shareIcons_1vtJa',
-            '.keyboard-wrapper', '.app-download', '.article-actions', '.article-bottom',
-            '.note', '.notes', '.annotation', '.translation', '.trans', '.translator',
-            '.audio', '.audio-player', '.voice', '.player', '.geek-player', '.podcast', '.radio',
-            '.reward', '.appreciate', '.appreciation', '.donate', '.sponsor', '.thanks', '.support',
-            '.qrcode', '.qr-code', '.qr', '.promotion', '.promo', '.ad-banner',
-            '.copyright', '.statement', '.disclaimer',
-            '.app-download-banner', '.article-plugin', '.article-notification', '.float-bar',
-            'audio', 'video',
-            '[class*="Note"]', '[class*="note"]', '[class*="Translation"]', '[class*="translation"]',
-            '[class*="Audio"]', '[class*="audio"]', '[class*="Reward"]', '[class*="reward"]',
-            '[data-plugin]', '[data-track]', '[data-track-section]', '[data-translation]', '[data-audio]',
-            '[data-role="toolbar"]',
-            'button', 'iframe', 'script', 'style'
-        ];
         removalSelectors.forEach(selector => {
             template.content.querySelectorAll(selector).forEach(el => el.remove());
         });
 
-        const pluginKeywords = [
-            'note', 'translation', 'audio', 'player', 'reward', 'donate',
-            'appreciation', 'sponsor', 'qrcode', 'toolbar', 'plugin',
-            'copyright', 'geeknote', 'bilingual'
-        ];
         const pluginElements = Array.from(template.content.querySelectorAll('*')).filter(el => {
             const className = (el.className || '').toString().toLowerCase();
             const idValue = (el.id || '').toString().toLowerCase();
@@ -372,11 +913,6 @@ async function sanitizeArticleHtml(page, rawHtml) {
         });
         pluginElements.forEach(el => el.remove());
 
-        const mindmapSelectors = [
-            '.mindmap', '.mind-map', '.MindMap', '.Mind-map',
-            '[data-type="mindmap"]', '[data-role="mindmap"]', '[data-widget="mindmap"]',
-            '[class*="MindMap"]', '[class*="mindMap"]'
-        ];
         mindmapSelectors.forEach(selector => {
             template.content.querySelectorAll(selector).forEach(el => el.remove());
         });
@@ -435,7 +971,16 @@ async function sanitizeArticleHtml(page, rawHtml) {
         });
 
         return template.innerHTML;
-    }, rawHtml);
+    }, {
+        html: rawHtml,
+        removalSelectors: ARTICLE_REMOVAL_SELECTORS,
+        pluginKeywords: ARTICLE_PLUGIN_KEYWORDS,
+        mindmapSelectors: ARTICLE_MINDMAP_SELECTORS
+    });
+}
+
+function normalizeTextContent(text = '') {
+    return text.replace(/\s+/g, ' ').trim();
 }
 
 function escapeHtml(text = '') {
@@ -447,57 +992,648 @@ function escapeHtml(text = '') {
         .replace(/'/g, '&#39;');
 }
 
-function buildPrintableHtml(title, sanitizedHtml) {
-    const baseCss = `
-        body {
-            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-            font-size: 16px;
-            line-height: 1.8;
-            color: #1f2329;
-            margin: 0;
-            padding: 40px;
-            background: #fff;
+function removeDuplicateTitle(html, title = '') {
+    if (!html || !title) {
+        return html;
+    }
+    const normalizedTitle = normalizeTextContent(title);
+    if (!normalizedTitle) {
+        return html;
+    }
+    try {
+        const $ = loadHtml(html, { decodeEntities: false });
+        const firstHeading = $('h1, h2').first();
+        if (firstHeading.length) {
+            const headingText = normalizeTextContent(firstHeading.text());
+            if (headingText && headingText === normalizedTitle) {
+                firstHeading.remove();
+            }
         }
+        return $.root().html() || html;
+    } catch {
+        return html;
+    }
+}
 
-        .article-print-wrapper {
-            max-width: 900px;
-            margin: 0 auto;
-        }
-
-        .article-print-wrapper h1 {
-            font-size: 32px;
-            line-height: 1.4;
-            margin-bottom: 24px;
-        }
-
-        a {
-            color: #0f5ef2;
-            text-decoration: none;
-        }
-
-        pre {
-            background: #f7f7f7;
-            padding: 16px;
-            border-radius: 6px;
-            overflow: auto;
-        }
-    `;
-
+function buildPdfHtml(title, sanitizedHtml, articleMeta = '') {
     return `
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <base href="${GEEKTIME_BASE_URL}">
-<style>${baseCss}${PRINT_FIX_CSS}</style>
+<style>${PDF_BASE_CSS}${PRINT_FIX_CSS}${CODE_HIGHLIGHT_CSS}</style>
 </head>
 <body>
-<div class="article-print-wrapper">
-  <h1>${escapeHtml(title)}</h1>
-  ${sanitizedHtml}
-</div>
+  <article class="article-pdf-wrapper">
+    <section class="article-content">
+      <h1 class="article-title">${escapeHtml(title)}</h1>
+      ${articleMeta ? `<div class="article-meta">${escapeHtml(articleMeta)}</div>` : ''}
+      ${sanitizedHtml}
+    </section>
+  </article>
 </body>
 </html>`;
+}
+
+function enhanceCodeBlocks(html) {
+    if (!html) return html;
+    try {
+        const $ = loadHtml(html, { decodeEntities: false });
+        const wrapCodeElement = ($source, innerHtml) => {
+            const wrapper = $('<pre class="code-block"></pre>');
+            const codeEl = $('<code></code>').html(innerHtml);
+            wrapper.append(codeEl);
+            $source.replaceWith(wrapper);
+        };
+
+        $('code').each((_, element) => {
+            const $el = $(element);
+            const parent = $el.parent();
+            const text = $el.text() || '';
+            const isBlocky = text.includes('\n') || text.length > 120 || $el.html().includes('<br');
+            if (isBlocky && parent.length && parent[0].tagName !== 'PRE') {
+                wrapCodeElement($el, $el.html());
+            }
+        });
+        $('pre').each((_, element) => {
+            const $el = $(element);
+            if (!$el.hasClass('code-block')) {
+                $el.addClass('code-block');
+            }
+            if ($el.find('code').length === 0) {
+                const text = $el.html();
+                $el.empty().append($('<code></code>').html(text));
+            }
+        });
+
+        const codeLikeSelectors = [
+            '[class*="code"]',
+            '[class*="Code"]',
+            '[class*="code-block"]',
+            '[class*="CodeBlock"]',
+            '[class*="hljs"]',
+            '[class*="language-"]',
+            '.highlight',
+            '.prism-code'
+        ];
+        const blockTags = ['P', 'DIV', 'SECTION', 'ARTICLE', 'UL', 'OL', 'TABLE', 'IMG', 'FIGURE'];
+        const isLikelyCodeText = (text = '') => {
+            const trimmed = text.trim();
+            if (trimmed.length === 0) return false;
+            if (trimmed.length > 1200) return false;
+            return trimmed.includes('\n') || trimmed.includes('{') || trimmed.includes(';') || trimmed.includes('    ');
+        };
+        $(codeLikeSelectors.join(',')).each((_, element) => {
+            const $el = $(element);
+            if ($el.is('pre') || $el.find('pre').length > 0) {
+                return;
+            }
+            const hasBlockChildren = blockTags.some(tag => $el.find(tag).length > 0);
+            if (hasBlockChildren) {
+                return;
+            }
+            const text = $el.text() || '';
+            if (!isLikelyCodeText(text)) {
+                return;
+            }
+            wrapCodeElement($el, $el.html());
+        });
+
+        $('figure').each((_, element) => {
+            const $el = $(element);
+            if ($el.find('pre').length === 1 && $el.children().length === 1) {
+                $el.replaceWith($el.find('pre').first());
+            }
+        });
+
+        const highlightSelectors = [
+            '[class*="hljs"]',
+            '[class*="language-"]',
+            '.simplebar-content',
+            '[data-language]',
+            '[data-code-block]',
+            '[class*="RichContent"]'
+        ];
+        const containerClassHints = ['simplebar', 'code', 'hljs', 'prism', 'syntax', 'monaco', 'ace', 'terminal', 'shell'];
+        const containerStyleHints = ['white-space: pre', 'white-space:pre', 'font-family: monospace', 'font-family:monospace'];
+        const inlineTags = new Set(['span', 'code', 'em', 'strong', 'b', 'i', 'u', 'a', 'label']);
+        const newlineTags = new Set(['DIV', 'P', 'LI', 'SECTION', 'ARTICLE', 'FIGURE', 'PRE', 'CODE', 'BR', 'TR', 'TD', 'TH']);
+        const looksLikeCodeBlock = (text = '') => {
+            if (!text) return false;
+            const trimmed = text.trim();
+            if (!trimmed) return false;
+            if (trimmed.includes('\n')) return true;
+            const keywords = ['{', '}', ';', '=>', '->', '#!', 'SELECT ', 'INSERT ', 'docker ', 'kubectl ', 'sudo ', 'printf', 'def ', 'class ', 'function ', 'const ', 'let ', 'var ', 'public ', 'private ', 'import ', 'package ', 'namespace ', 'http '];
+            return keywords.some(keyword => trimmed.includes(keyword));
+        };
+        const getTextWithBreaks = (node) => {
+            if (!node) return '';
+            if (node.type === 'text') {
+                return node.data || '';
+            }
+            if (!node.children || node.children.length === 0) {
+                return newlineTags.has((node.tagName || node.name || '').toUpperCase()) ? '\n' : '';
+            }
+            let text = '';
+            for (const child of node.children) {
+                text += getTextWithBreaks(child);
+            }
+            if (newlineTags.has((node.tagName || node.name || '').toUpperCase())) {
+                text += '\n';
+            }
+            return text;
+        };
+        const normalizeCodeText = (text = '') => {
+            const lines = text
+                .replace(/\r\n?/g, '\n')
+                .split('\n')
+                .map(line => line.replace(/\u00a0/g, ' ').replace(/\t/g, '    ').replace(/\s+$/, ''));
+            while (lines.length && !lines[0].trim()) {
+                lines.shift();
+            }
+            while (lines.length && !lines[lines.length - 1].trim()) {
+                lines.pop();
+            }
+            const result = [];
+            let previousBlank = false;
+            for (const line of lines) {
+                const isBlank = line.trim().length === 0;
+                if (isBlank && previousBlank) {
+                    continue;
+                }
+                result.push(line);
+                previousBlank = isBlank;
+            }
+            return result.join('\n').trim();
+        };
+        const convertToCodeBlock = ($target) => {
+            if (!$target || !$target.length) {
+                return false;
+            }
+            const rawText = getTextWithBreaks($target[0]) || '';
+            const normalized = normalizeCodeText(rawText);
+            if (!looksLikeCodeBlock(normalized)) {
+                return false;
+            }
+            const $pre = $('<pre class="code-block"></pre>');
+            const $code = $('<code></code>').text(normalized);
+            $pre.append($code);
+            $target.replaceWith($pre);
+            return true;
+        };
+        const processedCandidates = new Set();
+        $(highlightSelectors.join(',')).each((_, node) => {
+            const $start = $(node);
+            if (!$start || !$start.length) {
+                return;
+            }
+            let $candidate = null;
+            let $current = $start;
+            for (let depth = 0; depth < 8 && $current && $current.length; depth++) {
+                const rawTag = ($current[0]?.tagName || $current[0]?.name || '').toLowerCase();
+                const classAttr = ($current.attr('class') || '').toLowerCase();
+                const styleAttr = ($current.attr('style') || '').toLowerCase();
+                const hasClassHint = containerClassHints.some(keyword => classAttr.includes(keyword));
+                const hasStyleHint = containerStyleHints.some(keyword => styleAttr.includes(keyword));
+                if (!inlineTags.has(rawTag) && (hasClassHint || hasStyleHint)) {
+                    $candidate = $current;
+                }
+                $current = $current.parent();
+            }
+            if (!$candidate || !$candidate.length || $candidate.is('pre')) {
+                return;
+            }
+            const key = $candidate[0];
+            if (processedCandidates.has(key)) {
+                return;
+            }
+            if (convertToCodeBlock($candidate)) {
+                processedCandidates.add(key);
+            }
+        });
+
+        const simplebarWrappers = [
+            '.simplebar-wrapper',
+            '.simplebar-height-auto-observer-wrapper',
+            '.simplebar-height-auto-observer',
+            '.simplebar-mask',
+            '.simplebar-offset',
+            '.simplebar-content-wrapper',
+            '.simplebar-placeholder'
+        ];
+        simplebarWrappers.forEach(selector => {
+            $(selector).each((_, element) => {
+                const $el = $(element);
+                if ($el.find('pre.code-block').length > 0 || !$el.text().trim()) {
+                    $el.replaceWith($el.contents());
+                }
+            });
+        });
+        $('.simplebar-track, .simplebar-scrollbar').remove();
+
+        return $.root().html() || html;
+    } catch {
+        return html;
+    }
+}
+
+async function detectAccessIssuesOnPage(page) {
+    return page.evaluate(() => {
+        const bodyText = document.body ? (document.body.innerText || '') : '';
+        if (!bodyText) {
+            return null;
+        }
+        const normalized = bodyText.replace(/\s+/g, ' ').trim();
+        if (!normalized) {
+            return null;
+        }
+
+        const checks = [
+            {
+                keywords: ['请先登录', '重新登录', '立即登录', '登录后'],
+                message: '页面提示需要登录，Cookie 可能已失效或未正确导入'
+            },
+            {
+                keywords: ['试看结束', '购买专栏', '立即订阅', '购买课程', '仅对付费用户开放', '开通会员'],
+                message: '检测到购买/试看提示，可能未订阅该专栏或 Cookie 已失效'
+            },
+            {
+                keywords: ['暂无权限', '没有权限', '权限不足'],
+                message: '账号没有访问该专栏的权限'
+            }
+        ];
+
+        const lower = normalized.toLowerCase();
+        for (const check of checks) {
+            for (const keyword of check.keywords) {
+                if (lower.includes(keyword.toLowerCase())) {
+                    return check.message;
+                }
+            }
+        }
+        return null;
+    });
+}
+
+async function waitForArticleContentSelector(page, timeout = 60000) {
+    const start = Date.now();
+    while ((Date.now() - start) < timeout) {
+        for (const selector of ARTICLE_CONTENT_SELECTORS) {
+            const handle = await page.$(selector);
+            if (handle) {
+                await handle.dispose();
+                return selector;
+            }
+        }
+        await page.waitForTimeout(300);
+    }
+    return null;
+}
+
+async function autoScrollArticle(page, { step = 400, delay = 120, maxIterations = 80 } = {}) {
+    await page.evaluate(({ step, delay, maxIterations }) => {
+        return new Promise((resolve) => {
+            let iterations = 0;
+            const timer = setInterval(() => {
+                window.scrollBy(0, step);
+                iterations += 1;
+                const reachedBottom = window.scrollY + window.innerHeight >= document.body.scrollHeight - 50;
+                if (reachedBottom || iterations >= maxIterations) {
+                    clearInterval(timer);
+                    window.scrollTo(0, 0);
+                    resolve();
+                }
+            }, delay);
+        });
+    }, { step, delay, maxIterations });
+}
+
+async function fetchArticleContentFromPage(page, article, timeout = 60000) {
+    const targetUrl = article.url || `${GEEKTIME_BASE_URL}/column/article/${article.id}`;
+    let response;
+    try {
+        response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout });
+    } catch (error) {
+        throw new Error(`页面加载失败: ${error.message}`);
+    }
+
+    if (response && !response.ok()) {
+        throw new Error(`页面响应异常: HTTP ${response.status()} ${response.statusText()}`);
+    }
+
+    try {
+        await page.waitForLoadState('networkidle', { timeout: Math.min(10000, timeout) });
+    } catch {
+        // 部分页面可能没有额外请求，忽略 networkidle 超时
+    }
+
+    await autoScrollArticle(page);
+    await page.waitForTimeout(500);
+
+    const selector = await waitForArticleContentSelector(page, timeout);
+    if (!selector) {
+        const issue = await detectAccessIssuesOnPage(page);
+        if (issue) {
+            throw new Error(issue);
+        }
+        throw new Error('未能定位到文章正文，请重试或检查 Cookie 是否有效');
+    }
+
+    let extraction;
+    try {
+        extraction = await page.$eval(selector, (el) => {
+            const clone = el.cloneNode(true);
+            const removalSelectors = [
+                '.article-share',
+                '.article-actions',
+                '.article-copyright',
+                '.article-bottom',
+                '.reward',
+                '.share',
+                '.Index_recommend',
+                '.recommend',
+                '.audio-player',
+                '.AudioPlayer',
+                '.voice-player',
+                '.VoicePlayer',
+                '.audio-wrapper',
+                '.AudioWrapper',
+                '.geek-player',
+                '.Player',
+                '.plugin',
+                '.Plugin',
+                '[data-widget="audio"]',
+                '[data-widget="Audio"]',
+                '[data-role="audio"]',
+                '.comment-area',
+                '.CommentArea',
+                '.comment-wrapper',
+                '.CommentWrapper',
+                '#comments',
+                '#comment',
+                '.comments',
+                '.Comments'
+            ];
+            removalSelectors.forEach(sel => {
+                clone.querySelectorAll(sel).forEach(node => node.remove());
+            });
+
+            const toAbsoluteUrl = (value) => {
+                if (!value || typeof value !== 'string') {
+                    return '';
+                }
+                const trimmed = value.trim();
+                if (!trimmed) {
+                    return '';
+                }
+                if (trimmed.startsWith('blob:')) {
+                    return '';
+                }
+                if (trimmed.startsWith('data:')) {
+                    return trimmed;
+                }
+                if (/^https?:/i.test(trimmed)) {
+                    return trimmed;
+                }
+                if (trimmed.startsWith('//')) {
+                    return `${location.protocol}${trimmed}`;
+                }
+                try {
+                    const url = new URL(trimmed, location.href);
+                    return url.href;
+                } catch {
+                    return '';
+                }
+            };
+
+            const imageFallbackAttrs = [
+                'data-src',
+                'data-original',
+                'data-actualsrc',
+                'data-url',
+                'data-image',
+                'data-origin',
+                'data-thumbnail',
+                'data-bigimgsrc',
+                'data-download',
+                'data-href'
+            ];
+
+            clone.querySelectorAll('img').forEach(img => {
+                let finalSrc = toAbsoluteUrl(img.getAttribute('src'));
+                if (!finalSrc) {
+                    for (const attr of imageFallbackAttrs) {
+                        const candidate = toAbsoluteUrl(img.getAttribute(attr));
+                        if (candidate) {
+                            finalSrc = candidate;
+                            break;
+                        }
+                    }
+                }
+
+                if (!finalSrc) {
+                    img.remove();
+                } else {
+                    img.setAttribute('src', finalSrc);
+                }
+            });
+
+            const textLength = clone.innerText ? clone.innerText.trim().length : 0;
+            return {
+                html: clone.innerHTML,
+                textLength
+            };
+        });
+    } catch (error) {
+        throw new Error(`读取文章内容失败: ${error.message}`);
+    }
+
+    if (!extraction || !extraction.html || extraction.textLength < 20) {
+        const issue = await detectAccessIssuesOnPage(page);
+        if (issue) {
+            throw new Error(issue);
+        }
+        throw new Error('正文内容为空，可能是 Cookie 失效或只获取到试看内容');
+    }
+
+    const normalizedHtml = normalizeArticleHtml(extraction.html);
+    const sanitizedHtml = await sanitizeArticleHtml(page, normalizedHtml);
+
+    if (!sanitizedHtml || sanitizedHtml.trim().length === 0) {
+        throw new Error('正文清洗后为空，可能是页面结构变化');
+    }
+
+    const cleaned = removeDuplicateTitle(sanitizedHtml, article.originalTitle || article.title || '');
+    return enhanceCodeBlocks(cleaned);
+}
+
+function isRetryableContentError(message = '') {
+    if (!message) return true;
+    const lower = message.toLowerCase();
+    const nonRetryableKeywords = [
+        'cookie', '登录', '登陆', '订阅', '试看', '权限', '购买', '未授权', '无权限'
+    ];
+    return !nonRetryableKeywords.some(keyword => lower.includes(keyword));
+}
+
+async function fetchArticleContentWithRetry(page, article, options = {}) {
+    const {
+        timeout = 60000,
+        maxAttempts = 3,
+        delayMs = 1500
+    } = options;
+
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            if (attempt > 1) {
+                await page.waitForTimeout(400);
+            }
+            return await fetchArticleContentFromPage(page, article, timeout);
+        } catch (error) {
+            lastError = error;
+            const message = error?.message || '';
+            if (!isRetryableContentError(message) || attempt === maxAttempts) {
+                throw error;
+            }
+            const waitTime = delayMs * attempt;
+            if (process.env.DEBUG) {
+                console.log(chalk.gray(`重试文章 ${article.id} (第${attempt}次失败: ${message})，等待 ${waitTime}ms`));
+            }
+            try {
+                await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 });
+            } catch {
+                // 忽略
+            }
+            await page.waitForTimeout(waitTime);
+        }
+    }
+
+    throw lastError || new Error('无法获取文章内容');
+}
+
+async function extractArticlesFromPageDom(page) {
+    return page.evaluate((baseUrl) => {
+        const selectors = [
+            '[class*="catalog"] a[href*="/column/article/"]',
+            '[class*="directory"] a[href*="/column/article/"]',
+            '[class*="Catalogue"] a[href*="/column/article/"]',
+            '[class*="Catalog"] a[href*="/column/article/"]',
+            'nav a[href*="/column/article/"]',
+            'a[href*="/column/article/"]'
+        ];
+
+        const collectedAnchors = [];
+        const seenElements = new Set();
+        selectors.forEach(selector => {
+            const nodes = document.querySelectorAll(selector);
+            nodes.forEach(node => {
+                if (!seenElements.has(node)) {
+                    seenElements.add(node);
+                    collectedAnchors.push(node);
+                }
+            });
+        });
+
+        if (collectedAnchors.length === 0) {
+            return [];
+        }
+
+        const seenIds = new Set();
+        const articles = [];
+
+        const cleanText = (text) => (text || '').replace(/\s+/g, ' ').trim();
+
+        collectedAnchors.forEach((anchor, index) => {
+            const href = anchor.getAttribute('href') || '';
+            const match = href.match(/column\/article\/(\d+)/i);
+            if (!match) {
+                return;
+            }
+
+            const id = parseInt(match[1], 10);
+            if (!id || seenIds.has(id)) {
+                return;
+            }
+            seenIds.add(id);
+
+            let title = cleanText(anchor.innerText || anchor.textContent || anchor.getAttribute('title') || '');
+            if (!title) {
+                const titleNode = anchor.querySelector('[class*="title"], span, div');
+                if (titleNode) {
+                    title = cleanText(titleNode.textContent);
+                }
+            }
+            if (!title) {
+                title = `文章_${id}`;
+            }
+
+            let absoluteUrl = href;
+            try {
+                absoluteUrl = new URL(href, baseUrl).toString();
+            } catch {
+                if (href.startsWith('/')) {
+                    absoluteUrl = `${baseUrl.replace(/\/$/, '')}${href}`;
+                }
+            }
+
+            const sectionNode = anchor.closest('[data-section],[data-chapter],[class*="section"],[class*="Section"],[class*="chapter"],[class*="Chapter"]');
+            let sectionName = '';
+            if (sectionNode) {
+                sectionName = cleanText(
+                    sectionNode.getAttribute('data-section') ||
+                    sectionNode.getAttribute('data-chapter') ||
+                    sectionNode.getAttribute('data-title') ||
+                    sectionNode.querySelector('h2, h3, h4, .title, .section-title')?.textContent ||
+                    ''
+                );
+            }
+
+            articles.push({
+                id,
+                article_title: title,
+                article_sharetitle: title,
+                url: absoluteUrl,
+                section_name: sectionName,
+                chapter_index: index + 1,
+                originalIndex: index
+            });
+        });
+
+        return articles;
+    }, GEEKTIME_BASE_URL);
+}
+
+async function extractColumnAuthorFromPage(page) {
+    try {
+        return await page.evaluate(() => {
+            const selectors = [
+                '.author-name',
+                '.author',
+                '.teacher-name',
+                '.lecturer-name',
+                '.Index_teacherName',
+                '.ProductHeader_teacherName',
+                '.ColumnIntro_teacher__name',
+                '.ColumnIntro_author__name'
+            ];
+            for (const selector of selectors) {
+                const el = document.querySelector(selector);
+                if (el && el.textContent && el.textContent.trim()) {
+                    return el.textContent.trim();
+                }
+            }
+            const metaAuthor = document.querySelector('meta[name="author"]');
+            if (metaAuthor && metaAuthor.content) {
+                return metaAuthor.content.trim();
+            }
+            return null;
+        });
+    } catch {
+        return null;
+    }
 }
 
 // 获取专栏所有文章列表(通过API)
@@ -602,45 +1738,53 @@ async function getArticleList(page, columnUrl, timeout = 60000) {
     let columnInfoHandler = null;
 
     // 用于同步的 Promise
-    const articlesPromise = new Promise((resolve, reject) => {
-        articlesHandler = async (response) => {
-            const url = response.url();
-            // 监听文章列表 API
-            if (url.includes('/serv/v1/column/articles')) {
-                try {
-                    const data = await response.json();
-                    if (process.env.DEBUG) {
-                        console.log(chalk.gray('\n收到文章列表API响应'));
+    const articlesPromise = Promise.race([
+        new Promise((resolve) => {
+            articlesHandler = async (response) => {
+                const url = response.url();
+                // 监听文章列表 API
+                if (url.includes('/serv/v1/column/articles')) {
+                    try {
+                        const data = await response.json();
+                        if (process.env.DEBUG) {
+                            console.log(chalk.gray('\n收到文章列表API响应'));
+                        }
+                        resolve(data);
+                    } catch (e) {
+                        console.error('解析文章列表API失败:', e);
+                        resolve(null);
                     }
-                    resolve(data);
-                } catch (e) {
-                    console.error('解析文章列表API失败:', e);
                 }
-            }
-        };
-        page.on('response', articlesHandler);
-    });
+            };
+            page.on('response', articlesHandler);
+        }),
+        new Promise(resolve => setTimeout(() => resolve(null), 30000))
+    ]);
 
-    const columnInfoPromise = new Promise((resolve) => {
-        columnInfoHandler = async (response) => {
-            const url = response.url();
-            // 监听专栏详情相关的 API
-            if (url.includes('/serv/v1/column/intro') ||
-                url.includes('/serv/v3/column/info') ||
-                url.includes('/serv/v1/column/detail')) {
-                try {
-                    const data = await response.json();
-                    if (process.env.DEBUG) {
-                        console.log(chalk.gray(`收到专栏信息API响应: ${url}`));
+    const columnInfoPromise = Promise.race([
+        new Promise((resolve) => {
+            columnInfoHandler = async (response) => {
+                const url = response.url();
+                // 监听专栏详情相关的 API
+                if (url.includes('/serv/v1/column/intro') ||
+                    url.includes('/serv/v3/column/info') ||
+                    url.includes('/serv/v1/column/detail')) {
+                    try {
+                        const data = await response.json();
+                        if (process.env.DEBUG) {
+                            console.log(chalk.gray(`收到专栏信息API响应: ${url}`));
+                        }
+                        resolve(data);
+                    } catch (e) {
+                        console.error('解析专栏信息API失败:', e);
+                        resolve(null);
                     }
-                    resolve(data);
-                } catch (e) {
-                    console.error('解析专栏信息API失败:', e);
                 }
-            }
-        };
-        page.on('response', columnInfoHandler);
-    });
+            };
+            page.on('response', columnInfoHandler);
+        }),
+        new Promise(resolve => setTimeout(() => resolve(null), 5000))
+    ]);
 
     try {
         // 先设置监听器，再访问页面
@@ -649,23 +1793,13 @@ async function getArticleList(page, columnUrl, timeout = 60000) {
 
         spinner.text = '正在获取文章列表...';
 
-        // 等待文章列表 API（必须的）
-        articlesData = await Promise.race([
-            articlesPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error('文章列表API调用超时')), 30000))
-        ]);
+        // 等待文章列表 API（如果失败将返回 null）
+        articlesData = await articlesPromise;
 
-        // 尝试等待专栏信息 API（可选的，5秒超时）
-        try {
-            columnInfoData = await Promise.race([
-                columnInfoPromise,
-                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
-            ]);
-        } catch (e) {
-            // 获取专栏信息失败不是致命错误
-            if (process.env.DEBUG) {
-                console.log(chalk.gray('未获取到专栏信息API响应（将使用其他方法）'));
-            }
+        // 尝试等待专栏信息 API（可选）
+        columnInfoData = await columnInfoPromise;
+        if (!columnInfoData && process.env.DEBUG) {
+            console.log(chalk.gray('未获取到专栏信息API响应（将使用其他方法）'));
         }
 
     } catch (error) {
@@ -694,32 +1828,47 @@ async function getArticleList(page, columnUrl, timeout = 60000) {
         }
     }
 
-    if (!articlesData || !articlesData.data || !articlesData.data.list) {
-        spinner.fail('API响应数据格式错误');
+    let useDomExtraction = false;
+    let domArticles = [];
 
-        // 智能判断可能的原因
-        if (!articlesData) {
-            console.log(chalk.yellow('\n⚠️  未能获取到文章列表数据\n'));
-            console.log(chalk.cyan('可能的原因：'));
-            console.log(chalk.gray('  1. Cookie 已过期或无效 - 请重新获取 Cookie'));
-            console.log(chalk.gray('  2. 网络连接问题 - 请检查网络'));
-            console.log(chalk.gray('  3. 专栏 ID 不正确 - 请检查 URL\n'));
-        } else if (articlesData.code === -3000 || articlesData.code === -3001) {
-            console.log(chalk.red('\n❌ Cookie 已失效\n'));
-            console.log(chalk.cyan('📖 请重新获取 Cookie：'));
-            console.log(chalk.gray('  1. 浏览器登录极客时间'));
-            console.log(chalk.gray('  2. 按 F12 打开开发者工具'));
-            console.log(chalk.gray('  3. Network 标签 → 刷新页面'));
-            console.log(chalk.gray('  4. 点击任意请求 → 复制 Cookie\n'));
-        } else if (articlesData.error) {
-            console.log(chalk.yellow(`\n⚠️  API 返回错误: ${articlesData.error.msg || articlesData.error}\n`));
+    if (!articlesData || !articlesData.data || !Array.isArray(articlesData.data.list) || articlesData.data.list.length === 0) {
+        spinner.text = 'API 不可用，尝试从页面解析文章列表...';
+        try {
+            domArticles = await extractArticlesFromPageDom(page);
+        } catch (error) {
+            if (process.env.DEBUG) {
+                console.log(chalk.gray(`DOM文章提取失败: ${error.message}`));
+            }
         }
 
-        return { articles: [], columnTitle: 'unknown' };
+        if (!domArticles || domArticles.length === 0) {
+            spinner.fail('无法获取文章列表');
+
+            if (!articlesData) {
+                console.log(chalk.yellow('\n⚠️  未能从接口或页面获取文章列表\n'));
+                console.log(chalk.cyan('可能的原因：'));
+                console.log(chalk.gray('  1. Cookie 已过期或无效 - 请重新获取 Cookie'));
+                console.log(chalk.gray('  2. 页面结构发生变化 - 请联系开发者更新解析逻辑'));
+                console.log(chalk.gray('  3. 网络连接问题或URL无效\n'));
+            } else if (articlesData.code === -3000 || articlesData.code === -3001) {
+                console.log(chalk.red('\n❌ Cookie 已失效\n'));
+                console.log(chalk.cyan('📖 请重新获取 Cookie：'));
+                console.log(chalk.gray('  1. 浏览器登录极客时间'));
+                console.log(chalk.gray('  2. 按 F12 打开开发者工具'));
+                console.log(chalk.gray('  3. Network 标签 → 刷新页面'));
+                console.log(chalk.gray('  4. 点击任意请求 → 复制 Cookie\n'));
+            } else if (articlesData.error) {
+                console.log(chalk.yellow(`\n⚠️  API 返回错误: ${articlesData.error.msg || articlesData.error}\n`));
+            }
+
+            return { articles: [], columnTitle: 'unknown', columnAuthor: '极客时间' };
+        }
+
+        useDomExtraction = true;
     }
 
     // 调试信息：记录完整的API响应结构（仅在环境变量DEBUG存在时）
-    if (process.env.DEBUG) {
+    if (!useDomExtraction && process.env.DEBUG) {
         console.log(chalk.gray('\n========== 文章列表 API 响应数据 =========='));
         console.log(chalk.gray(JSON.stringify(articlesData.data, null, 2)));
         if (columnInfoData) {
@@ -742,7 +1891,7 @@ async function getArticleList(page, columnUrl, timeout = 60000) {
     }
 
     // 方法2: 从文章列表 API 数据中获取
-    if (!columnTitle || columnTitle === '专栏' || columnTitle === '极客时间') {
+    if ((!columnTitle || columnTitle === '专栏' || columnTitle === '极客时间') && articlesData && articlesData.data) {
         columnTitle = articlesData.data.column_title
             || articlesData.data.column_subtitle
             || articlesData.data.title
@@ -826,10 +1975,15 @@ async function getArticleList(page, columnUrl, timeout = 60000) {
         console.log(chalk.gray(`  提取的专栏名: ${columnTitle}\n`));
     }
 
-    const columnAuthor = extractColumnAuthor(columnInfoData, articlesData) || '极客时间';
+    let columnAuthor = '极客时间';
+    if (!useDomExtraction && articlesData) {
+        columnAuthor = extractColumnAuthor(columnInfoData, articlesData) || '极客时间';
+    } else {
+        columnAuthor = await extractColumnAuthorFromPage(page) || '极客时间';
+    }
 
     // 解析文章列表
-    const rawArticles = articlesData.data.list;
+    const rawArticles = useDomExtraction ? domArticles : (articlesData.data.list || []);
 
     const articles = rawArticles.map((article, index) => {
         const title = article.article_title || article.article_sharetitle || 'Untitled';
@@ -844,7 +1998,7 @@ async function getArticleList(page, columnUrl, timeout = 60000) {
 
         return {
             title: cleanTitle,
-            url: `https://time.geekbang.org/column/article/${id}`,
+            url: article.url || `${GEEKTIME_BASE_URL}/column/article/${id}`,
             originalTitle: title,
             id: id,
             sectionName: article.section_name || '',
@@ -888,7 +2042,7 @@ async function downloadWithConcurrency(context, articles, outputDir, concurrency
             const article = articles[index];
 
             try {
-                const result = await downloadArticleSilent(page, article, outputDir, index + 1, total);
+                const result = await downloadArticleSilent(page, article, outputDir, index + 1, total, timeout);
                 results[index] = result;
                 completed++;
 
@@ -943,52 +2097,20 @@ async function downloadWithConcurrency(context, articles, outputDir, concurrency
 }
 
 // 下载单篇文章为 PDF（静默模式，不显示单独的spinner）
-async function downloadArticleSilent(page, article, outputDir, index, total) {
+async function downloadArticleSilent(page, article, outputDir, index, total, timeout = 60000) {
     try {
         if (process.env.DEBUG) {
             console.log(chalk.gray(`[silent] 准备处理文章 ${article.id} - ${article.originalTitle || article.title}`));
         }
-        const articleData = await fetchArticleData(page.context(), article.id);
-        if (process.env.DEBUG) {
-            console.log(chalk.gray(`[silent] 已获取文章数据 ${article.id}`));
-        }
-        const normalizedHtml = normalizeArticleHtml(articleData.article_content || '');
-        const sanitizedHtml = await sanitizeArticleHtml(page, normalizedHtml);
-        if (process.env.DEBUG) {
-            console.log(chalk.gray(`[silent] 已完成内容清洗 ${article.id}`));
-        }
-        const printableHtml = buildPrintableHtml(article.originalTitle || article.title, sanitizedHtml);
+        const sanitizedHtml = await fetchArticleContentWithRetry(page, article, { timeout });
+        const meta = article.sectionName ? `章节：${article.sectionName}` : '';
+        const printableHtml = buildPdfHtml(article.originalTitle || article.title, sanitizedHtml, meta);
 
         await page.setContent(printableHtml, { waitUntil: 'domcontentloaded' });
-        if (process.env.DEBUG) {
-            console.log(chalk.gray(`[silent] 已设置页面内容 ${article.id}`));
-        }
-        if (process.env.DEBUG) {
-            console.log(chalk.gray(`[silent] 等待图片初步加载 ${article.id}`));
-        }
-        try {
-            await page.waitForFunction(() => {
-                const imgs = Array.from(document.images || []);
-                if (imgs.length === 0) {
-                    return true;
-                }
-                return imgs.every(img => img.complete);
-            }, { timeout: 30000 });
-        } catch (waitError) {
-            if (process.env.DEBUG) {
-                console.log(chalk.gray(`[silent] 图片初步加载等待超时 ${article.id}: ${waitError?.message || waitError}`));
-            }
-        }
         try {
             await page.waitForLoadState('networkidle', { timeout: 5000 });
-            if (process.env.DEBUG) {
-                console.log(chalk.gray(`[silent] networkidle 完成 ${article.id}`));
-            }
         } catch {
-            // 忽略由于没有额外资源导致的延时
-            if (process.env.DEBUG) {
-                console.log(chalk.gray(`[silent] networkidle 超时（已忽略） ${article.id}`));
-            }
+            // ignore
         }
 
         // 优化图片大小：将大图片转换为合适的尺寸，减小PDF体积
@@ -1080,7 +2202,7 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
         }
 
         // 等待图片处理完成
-        await page.waitForTimeout(30000);
+        await page.waitForTimeout(1200);
         if (process.env.DEBUG) {
             console.log(chalk.gray(`[silent] 已准备生成PDF ${article.id}`));
         }
@@ -1098,7 +2220,7 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
                 bottom: '20mm',
                 left: '15mm'
             },
-            printBackground: false,  // 关闭背景打印，显著减小文件大小
+            printBackground: true,
             preferCSSPageSize: false
         });
         if (process.env.DEBUG) {
@@ -1116,20 +2238,19 @@ async function downloadArticleSilent(page, article, outputDir, index, total) {
 }
 
 // 下载单篇文章为 PDF
-async function downloadArticle(page, article, outputDir, index, total) {
+async function downloadArticle(page, article, outputDir, index, total, timeout = 60000) {
     const spinner = ora(`[${index}/${total}] 正在下载: ${article.title}`).start();
 
     try {
-        const articleData = await fetchArticleData(page.context(), article.id);
-        const normalizedHtml = normalizeArticleHtml(articleData.article_content || '');
-        const sanitizedHtml = await sanitizeArticleHtml(page, normalizedHtml);
-        const printableHtml = buildPrintableHtml(article.originalTitle || article.title, sanitizedHtml);
+        const sanitizedHtml = await fetchArticleContentWithRetry(page, article, { timeout });
+        const meta = article.sectionName ? `章节：${article.sectionName}` : '';
+        const printableHtml = buildPdfHtml(article.originalTitle || article.title, sanitizedHtml, meta);
 
         await page.setContent(printableHtml, { waitUntil: 'domcontentloaded' });
         try {
             await page.waitForLoadState('networkidle', { timeout: 5000 });
         } catch {
-            // 没有额外资源加载时忽略
+            // 忽略
         }
 
         // 优化图片大小：将大图片转换为合适的尺寸，减小PDF体积
@@ -1204,7 +2325,7 @@ async function downloadArticle(page, article, outputDir, index, total) {
                 bottom: '20mm',
                 left: '15mm'
             },
-            printBackground: false,  // 关闭背景打印，显著减小文件大小
+            printBackground: true,
             preferCSSPageSize: false
         });
 
@@ -1327,11 +2448,9 @@ async function mergePDFs(outputDir, columnTitle, articles, deleteAfterMerge = fa
 }
 
 // 提取单篇文章的 HTML 内容（用于 EPUB 生成）
-async function extractArticleContent(page, article, index, total) {
+async function extractArticleContent(page, article, index, total, timeout = 60000) {
     try {
-        const articleData = await fetchArticleData(page.context(), article.id);
-        const normalizedHtml = normalizeArticleHtml(articleData.article_content || '');
-        const sanitizedHtml = await sanitizeArticleHtml(page, normalizedHtml);
+        const sanitizedHtml = await fetchArticleContentWithRetry(page, article, { timeout });
 
         if (!sanitizedHtml) {
             throw new Error('未能提取到文章内容');
@@ -1385,7 +2504,7 @@ async function extractWithConcurrency(context, articles, concurrency = 5, delay 
             const article = articles[index];
 
             try {
-                const result = await extractArticleContent(page, article, index + 1, total);
+                const result = await extractArticleContent(page, article, index + 1, total, timeout);
                 results[index] = result;
                 completed++;
 
@@ -1500,41 +2619,43 @@ async function generateEPUB(outputDir, columnTitle, columnAuthor, articles, cont
                     margin: 1.5em 0;
                     padding: 0;
                 }
-                p {
+                p, div {
                     margin: 1.2em 0;
                     text-indent: 0;
-                    line-height: 1.8;
+                    line-height: 1.9;
                     word-wrap: break-word;
                     overflow-wrap: break-word;
                     display: block;
                     page-break-inside: avoid;
                 }
-                /* 确保段落之间有明显间隔 */
-                p + p {
-                    margin-top: 1.5em;
+                p + p,
+                div + p,
+                p + div {
+                    margin-top: 1.6em;
                 }
                 /* 代码块样式 */
                 pre {
-                    background-color: #f6f8fa;
+                    background-color: #0b1220;
+                    color: #d9e2ff;
                     border: 1px solid #e1e4e8;
                     border-radius: 6px;
-                    padding: 16px;
+                    padding: 18px 20px;
                     overflow-x: auto;
                     margin: 1em 0;
-                    line-height: 1.5;
+                    line-height: 1.6;
                     font-size: 14px;
                     white-space: pre-wrap;
                     word-wrap: break-word;
-                    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+                    font-family: 'Fira Code', 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
                     page-break-inside: avoid;
                 }
                 code {
-                    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+                    font-family: 'Fira Code', 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
                     font-size: 0.9em;
-                    background-color: #f6f8fa;
+                    background-color: rgba(15, 23, 42, 0.1);
                     padding: 0.2em 0.4em;
                     border-radius: 3px;
-                    border: 1px solid #e1e4e8;
+                    border: 1px solid rgba(15, 23, 42, 0.1);
                 }
                 pre code {
                     background-color: transparent;
@@ -1645,12 +2766,13 @@ async function generateEPUB(outputDir, columnTitle, columnAuthor, articles, cont
 async function main(options) {
     console.log(chalk.bold.cyan('\n🚀 极客时间专栏下载器\n'));
 
-    // 获取配置：优先级 命令行 > 配置文件
+    // 获取配置：优先级 命令行 > 配置文件 > 默认 cookies.json
     let cookie = options.cookie;
+    let cookieFile = options.cookieFile;
     let columnUrl = options.url;
 
-    // 如果命令行没有提供，尝试从配置文件读取
-    if (!cookie || !columnUrl) {
+    // 如果命令行没有提供所需信息，尝试从配置文件读取
+    if (!cookie || !columnUrl || !cookieFile) {
         // 使用当前工作目录的config.json，而不是脚本所在目录
         const configPath = path.join(process.cwd(), 'config.json');
         try {
@@ -1660,22 +2782,37 @@ async function main(options) {
             // 使用配置文件中的值作为默认值
             if (!cookie) cookie = config.cookie;
             if (!columnUrl) columnUrl = config.columnUrl;
+            if (!cookieFile) cookieFile = config.cookieFile;
         } catch (error) {
             // 配置文件不存在或读取失败，不是致命错误
             // 只有在命令行也没提供时才报错
         }
     }
 
+    // 如果没有cookie字符串但存在 cookies.json 文件，自动使用
+    if (!cookie && !cookieFile) {
+        const defaultCookieJsonPath = path.join(process.cwd(), 'cookies.json');
+        if (await fileExists(defaultCookieJsonPath)) {
+            cookieFile = defaultCookieJsonPath;
+        }
+    }
+
+    const cookieSavePath = cookieFile || path.join(process.cwd(), 'cookies.json');
+
     // 验证必要参数
-    if (!cookie) {
+    if (!cookie && !cookieFile) {
         console.error(chalk.red('❌ 缺少 Cookie！'));
         console.log(chalk.yellow('\n请通过以下方式之一提供 Cookie：'));
         console.log(chalk.gray('1. 命令行参数：--cookie "你的cookie字符串"'));
         console.log(chalk.gray('2. 配置文件 config.json：'));
         console.log(chalk.gray('   {'));
         console.log(chalk.gray('     "cookie": "你的cookie字符串",'));
-        console.log(chalk.gray('     "columnUrl": "https://time.geekbang.org/column/article/xxxxx"'));
-        console.log(chalk.gray('   }\n'));
+        console.log(chalk.gray('     "columnUrl": "https://time.geekbang.org/column/article/xxxxx",'));
+        console.log(chalk.gray('     "cookieFile": "cookies.json"  // 可选，导入JSON文件'));
+        console.log(chalk.gray('   }'));
+        console.log(chalk.gray('3. 提供 Cookie JSON 文件：'));
+        console.log(chalk.gray('   - 命令行参数：--cookie-file ./cookies.json'));
+        console.log(chalk.gray('   - 或将 cookies.json 放到当前目录\n'));
         process.exit(1);
     }
 
@@ -1724,16 +2861,42 @@ async function main(options) {
         userAgent: DEFAULT_USER_AGENT
     });
 
-    // 兼容用户直接复制整行"Cookie: xxx"
-    let normalizedCookie = cookie.trim();
-    if (/^cookie:/i.test(normalizedCookie)) {
-        normalizedCookie = normalizedCookie.replace(/^cookie:\s*/i, '');
+    let normalizedCookie = '';
+    let cookiesForContext = [];
+
+    if (cookie) {
+        normalizedCookie = cookie.trim();
+        if (/^cookie:/i.test(normalizedCookie)) {
+            normalizedCookie = normalizedCookie.replace(/^cookie:\s*/i, '');
+        }
+        cookiesForContext = parseCookies(normalizedCookie);
+    } else if (cookieFile) {
+        try {
+            const { cookieHeader, cookies, absolutePath } = await loadCookiesFromJsonFile(cookieFile);
+            normalizedCookie = cookieHeader.trim();
+            cookiesForContext = cookies;
+            console.log(chalk.gray(`🍪 已从 ${absolutePath} 导入 Cookie`));
+        } catch (error) {
+            console.error(chalk.red(`❌ 读取 Cookie JSON 失败: ${error.message}`));
+            process.exit(1);
+        }
     }
+
     globalCookieHeader = normalizedCookie;
 
     // 设置 cookies
-    const cookies = parseCookies(normalizedCookie);
-    await context.addCookies(cookies);
+    await context.addCookies(cookiesForContext);
+    await updateGlobalCookieHeaderFromContext(context);
+    context.on('response', (response) => {
+        try {
+            const headers = response.headers();
+            if (headers && headers['set-cookie']) {
+                updateGlobalCookieHeaderFromContext(context);
+            }
+        } catch {
+            // ignore
+        }
+    });
 
     // 确保所有极客时间域名的请求都携带原始Cookie串，避免Playwright丢失关键字段
     await context.route('**/*', (route) => {
@@ -1755,9 +2918,12 @@ async function main(options) {
         }
 
         const headers = {
-            ...request.headers(),
-            cookie: normalizedCookie
+            ...request.headers()
         };
+        const outgoingCookieHeader = globalCookieHeader || normalizedCookie;
+        if (outgoingCookieHeader) {
+            headers.cookie = outgoingCookieHeader;
+        }
         route.continue({ headers });
     });
 
@@ -1843,7 +3009,10 @@ async function main(options) {
             const successCount = results.filter(r => r.success).length;
             const failCount = results.filter(r => !r.success).length;
             const timeoutCount = results.filter(r =>
-                !r.success && r.error && (r.error.includes('timeout') || r.error.includes('Timeout'))
+                !r.success && r.error && /timeout/i.test(r.error)
+            ).length;
+            const authIssueCount = results.filter(r =>
+                !r.success && r.error && /(Cookie|登录|登陆|订阅|权限|试看|购买)/i.test(r.error)
             ).length;
 
             console.log(chalk.bold.cyan('\n📊 PDF 下载统计\n'));
@@ -1857,6 +3026,11 @@ async function main(options) {
                 console.log(chalk.gray('  1. Cookie 已失效 - 请重新获取 Cookie'));
                 console.log(chalk.gray('  2. 网络连接慢 - 尝试使用 --timeout 120000 增加超时时间'));
                 console.log(chalk.gray('  3. 需要登录或权限不足 - 确认已购买该专栏\n'));
+            } else if (authIssueCount > 0) {
+                console.log(chalk.yellow('⚠️  检测到登录或权限相关异常\n'));
+                console.log(chalk.gray('  1. 在浏览器中重新登录极客时间，进入该专栏任意文章'));
+                console.log(chalk.gray('  2. 复制最新的 Cookie（或重新导出 cookies.json）'));
+                console.log(chalk.gray('  3. 使用新的 --cookie 或 --cookie-file 参数后重试\n'));
             }
 
             // 合并 PDF
@@ -1900,7 +3074,10 @@ async function main(options) {
             const successCount = contentResults.filter(r => r.success).length;
             const failCount = contentResults.filter(r => !r.success).length;
             const timeoutCount = contentResults.filter(r =>
-                !r.success && r.error && (r.error.includes('Cookie') || r.error.includes('timeout') || r.error.includes('Timeout'))
+                !r.success && r.error && /timeout/i.test(r.error)
+            ).length;
+            const authIssueCount = contentResults.filter(r =>
+                !r.success && r.error && /(Cookie|登录|登陆|订阅|权限|试看|购买)/i.test(r.error)
             ).length;
 
             console.log(chalk.bold.cyan('\n📊 EPUB 提取统计\n'));
@@ -1913,19 +3090,42 @@ async function main(options) {
                 console.log(chalk.gray('  1. Cookie 已失效 - 请重新获取 Cookie'));
                 console.log(chalk.gray('  2. 网络连接慢 - 尝试使用 --timeout 120000 增加超时时间'));
                 console.log(chalk.gray('  3. 需要登录或权限不足 - 确认已购买该专栏\n'));
+            } else if (authIssueCount > 0) {
+                console.log(chalk.yellow('⚠️  检测到登录/权限问题，建议步骤：\n'));
+                console.log(chalk.gray('  1. 浏览器重新登录极客时间并打开该专栏文章'));
+                console.log(chalk.gray('  2. 重新复制最新 Cookie 或导出 cookies.json'));
+                console.log(chalk.gray('  3. 更新 --cookie 或 --cookie-file 后再次执行\n'));
             }
 
             // 生成 EPUB
             if (successCount > 0) {
-                const epubPath = await generateEPUB(
-                    outputDir,
-                    columnTitle,
-                    columnAuthor,
-                    articlesToDownload,
-                    contentResults
+                const hasImageContent = contentResults.some(result =>
+                    result && result.success && typeof result.content === 'string' && result.content.includes('<img')
                 );
-                if (epubPath) {
-                    console.log(chalk.green(`\n✅ EPUB 生成完成: ${epubPath}\n`));
+
+                let processedContent = contentResults;
+                let tempAssetsDir = null;
+
+                try {
+                    if (hasImageContent) {
+                        tempAssetsDir = await createTempAssetsDir(outputDir);
+                        processedContent = await rewriteEpubContentImages(context, contentResults, tempAssetsDir);
+                    }
+
+                    const epubPath = await generateEPUB(
+                        outputDir,
+                        columnTitle,
+                        columnAuthor,
+                        articlesToDownload,
+                        processedContent
+                    );
+                    if (epubPath) {
+                        console.log(chalk.green(`\n✅ EPUB 生成完成: ${epubPath}\n`));
+                    }
+                } finally {
+                    if (tempAssetsDir) {
+                        await cleanupTempAssetsDir(tempAssetsDir);
+                    }
                 }
             }
         }
@@ -1942,6 +3142,11 @@ async function main(options) {
         }
         process.exit(1);
     } finally {
+        try {
+            await persistCookiesToFile(context, cookieSavePath);
+        } catch {
+            // ignore
+        }
         // 确保浏览器完全关闭
         try {
             if (browser && !isShuttingDown) {
@@ -1961,6 +3166,7 @@ program
     .version(version)
     .option('-u, --url <url>', '专栏文章URL（任意一篇）')
     .option('-c, --cookie <cookie>', 'Cookie字符串（用于认证）')
+    .option('--cookie-file <path>', '从 JSON 文件导入 Cookie（如 chrome 扩展导出的 cookies.json）')
     .option('-o, --output <dir>', '输出目录', './downloads')
     .option('-f, --format <format>', '输出格式: pdf, epub, both', 'pdf')
     .option('--headless <boolean>', '无头模式', true)

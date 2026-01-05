@@ -33,8 +33,10 @@
   "dependencies": {
     "@lillallol/outline-pdf": "^4.0.0",
     "chalk": "^5.3.0",
+    "cheerio": "^1.1.2",
     "commander": "^11.1.0",
     "epub-gen-memory": "^1.1.2",
+    "mime-types": "^3.0.2",
     "ora": "^8.0.1",
     "pdf-lib": "^1.17.1",
     "playwright": "^1.40.0"

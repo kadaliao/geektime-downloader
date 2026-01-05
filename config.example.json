@@ -1,4 +1,5 @@
 {
   "cookie": "你的完整 cookie 字符串",
+  "cookieFile": "./cookies.json",
   "columnUrl": "https://time.geekbang.org/column/article/200822"
 }
