@@ -4,6 +4,7 @@
 
 ### 技术改进
 - 改进代码块清洗逻辑，支持识别 SimpleBar/高亮容器并恢复成标准 `<pre><code>` 结构，PDF/EPUB 中的代码片段可完整显示
+- 下载 EPUB 图片时自动将 WebP/AVIF 等格式转换成 PNG，兼容 Send to Kindle
 
 ### 文档更新
 - README 增加“代码块还原”特性说明

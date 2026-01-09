@@ -14,6 +14,7 @@ import { createRequire } from 'module';
 import * as pdfLib from 'pdf-lib';
 import { outlinePdfFactory } from '@lillallol/outline-pdf';
 import epubGenMemory from 'epub-gen-memory';
+import sharp from 'sharp';
 
 const { PDFDocument } = pdfLib;
 const outlinePdf = outlinePdfFactory(pdfLib);
@@ -345,6 +346,9 @@ const GEEKTIME_BASE_URL = 'https://time.geekbang.org';
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const EPUB_IMAGE_BATCH_SIZE = 5;
 const TEMP_ASSET_PREFIX = '__epub_assets__';
+const KINDLE_SAFE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/bmp']);
+const KINDLE_SAFE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp']);
+const KINDLE_CONVERT_TARGET = { ext: 'png', mime: 'image/png' };
 const ARTICLE_CONTENT_SELECTORS = [
     '#article-content',
     '#article-content-container',
@@ -662,13 +666,54 @@ function determineImageExtension(resourceUrl = '', contentType = '') {
     return ext.toLowerCase();
 }
 
+function isKindleFriendlyImage(ext = '', mimeType = '') {
+    const normalizedExt = (ext || '').replace('.', '').toLowerCase();
+    const normalizedMime = (mimeType || '').toLowerCase();
+    if (normalizedExt && KINDLE_SAFE_EXTENSIONS.has(normalizedExt)) {
+        return true;
+    }
+    if (normalizedMime && KINDLE_SAFE_MIME_TYPES.has(normalizedMime)) {
+        return true;
+    }
+    return false;
+}
+
+async function convertImageBufferForKindle(buffer) {
+    if (!buffer || buffer.length === 0) {
+        return null;
+    }
+    try {
+        const converted = await sharp(buffer).png().toBuffer();
+        return {
+            buffer: converted,
+            ext: KINDLE_CONVERT_TARGET.ext,
+            mime: KINDLE_CONVERT_TARGET.mime
+        };
+    } catch (error) {
+        console.log(chalk.yellow(`  ⚠️  图片格式转换失败: ${error.message}`));
+        return null;
+    }
+}
+
 async function downloadImageToLocal(context, normalizedUrl, assetsDir, articleIndex) {
     const { buffer, contentType, finalUrl } = await fetchBinaryWithContext(context, normalizedUrl);
-    const ext = determineImageExtension(finalUrl || normalizedUrl, contentType);
+    let finalBuffer = buffer;
+    let finalMime = contentType;
+    let ext = determineImageExtension(finalUrl || normalizedUrl, finalMime);
+
+    if (!isKindleFriendlyImage(ext, finalMime)) {
+        const conversion = await convertImageBufferForKindle(buffer);
+        if (conversion) {
+            finalBuffer = conversion.buffer;
+            finalMime = conversion.mime;
+            ext = conversion.ext;
+        }
+    }
+
     const hash = crypto.createHash('md5').update(normalizedUrl).digest('hex').slice(0, 10);
     const filename = `article_${String(articleIndex + 1).padStart(3, '0')}_${hash}.${ext}`;
     const filepath = path.join(assetsDir, filename);
-    await fs.writeFile(filepath, buffer);
+    await fs.writeFile(filepath, finalBuffer);
     return {
         fileUrl: pathToFileURL(filepath).href,
         localPath: filepath
@@ -735,7 +780,7 @@ async function saveDataUriImage(dataUri, assetsDir, articleIndex, dataIndex) {
     if (!match) {
         return null;
     }
-    const mimeType = match[1] || 'application/octet-stream';
+    let mimeType = match[1] || 'application/octet-stream';
     const base64Data = match[2];
     let buffer;
     try {
@@ -746,7 +791,15 @@ async function saveDataUriImage(dataUri, assetsDir, articleIndex, dataIndex) {
     if (!buffer || buffer.length === 0) {
         return null;
     }
-    const ext = mime.extension(mimeType) || 'bin';
+    let ext = mime.extension(mimeType) || 'bin';
+    if (!isKindleFriendlyImage(ext, mimeType)) {
+        const conversion = await convertImageBufferForKindle(buffer);
+        if (conversion) {
+            buffer = conversion.buffer;
+            ext = conversion.ext;
+            mimeType = conversion.mime;
+        }
+    }
     const filename = `article_${String(articleIndex + 1).padStart(3, '0')}_inline_${String(dataIndex).padStart(3, '0')}.${ext}`;
     const filepath = path.join(assetsDir, filename);
     await fs.writeFile(filepath, buffer);
